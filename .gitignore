@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+sessions/
+out/
+*.wav
+*.pcm
+.refs/
+spikes/.strands/
+spikes/gstate.json
+letter.pdf
+out/
