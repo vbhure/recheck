@@ -1,0 +1,240 @@
+"""Recheck command line.
+
+    recheck audit  <letter> --case ID [--scripted | --model PROVIDER]
+    recheck resume --case ID --answer "0=left,1=right"
+    recheck show   --case ID
+
+The two-command shape is not a convenience. `audit` may stop at an
+interrupt and exit; `resume` is a DIFFERENT PROCESS that restores state from
+disk. That is the whole point, so it is the default way to drive the tool
+rather than a special mode.
+
+Exit codes are meaningful, because the demo depends on them:
+    0  completed
+    2  awaiting human input (an interrupt was raised and persisted)
+    3  could not proceed (unparsable document, invalid answer, bad case)
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import pathlib
+import sys
+
+from strands.multiagent.base import Status
+
+from recheck.case import CaseCorrupt, CaseStore
+from recheck.graph import (
+    INTERRUPT_ID,
+    ScannedDocument,
+    build_graph,
+)
+from recheck.report import render
+
+EXIT_OK = 0
+EXIT_AWAITING_HUMAN = 2
+EXIT_CANNOT_PROCEED = 3
+
+SCRIPTED_NOTE = (
+    "zero-model path: classifications are supplied by ScriptedModel, which drives the real "
+    "Strands structured-output code path with no network and no inference cost"
+)
+
+
+def _scripted_factory(fixture: pathlib.Path | None):
+    """Build an agent whose model replays a committed classification fixture."""
+    from strands import Agent
+
+    from recheck.classify import SYSTEM_PROMPT
+    from recheck.models.scripted import ScriptedModel
+
+    if fixture is None or not fixture.exists():
+        payload = {"classifications": []}
+    else:
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+
+    def make():
+        # callback_handler=None suppresses Strands' default stdout handler,
+        # which otherwise prints "Tool #1: ClassificationBatch" into the
+        # middle of the report. Framework chatter is not product output.
+        return Agent(
+            model=ScriptedModel(payload=payload),
+            system_prompt=SYSTEM_PROMPT,
+            callback_handler=None,
+        )
+
+    return make
+
+
+def _resolve_factory(args) -> tuple[object | None, str]:
+    if args.scripted:
+        fixture = pathlib.Path(args.classifications) if args.classifications else None
+        return _scripted_factory(fixture), SCRIPTED_NOTE
+    if getattr(args, "model", None):
+        from recheck.models.factory import build_agent_factory
+
+        return build_agent_factory(args.model), f"live model provider: {args.model}"
+    return None, (
+        "no classifier configured: conditions outside the deterministic lexicon will be "
+        "routed to human review rather than guessed"
+    )
+
+
+def _print_interrupt(result) -> None:
+    for interrupt in result.interrupts:
+        reason = interrupt.reason or {}
+        print()
+        print("=" * 74)
+        print("HUMAN INPUT REQUIRED")
+        print("=" * 74)
+        print(reason.get("question", "input required"))
+        print()
+        for item in reason.get("conditions", []):
+            print(f"  [{item['index']}] {item['condition']}  ({item['percent']}%)")
+            print(f"        extremity group: {item['extremity_group']}")
+            print(f"        why asking: {item['why']}")
+        print()
+        print(f"  accepted values: {', '.join(reason.get('accepted_values', []))}")
+        print(f"  note: {reason.get('note', '')}")
+        print()
+        print("This process is now exiting. State has been persisted to disk.")
+        print("Resume in a NEW process with:")
+        indices = [str(i["index"]) for i in reason.get("conditions", [])]
+        example = ",".join(f"{i}=left" for i in indices) or "0=left"
+        print(f"    python -m recheck.cli resume --case <ID> --answer \"{example}\"")
+        print("=" * 74)
+
+
+def cmd_audit(args) -> int:
+    store = CaseStore(args.store)
+    source = pathlib.Path(args.letter)
+    if not source.exists():
+        print(f"no such document: {source}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    factory, note = _resolve_factory(args)
+    print(f"[recheck] {note}")
+
+    graph = build_graph(store, args.case, str(source), factory)
+    try:
+        result = asyncio.run(graph.invoke_async(f"audit {source.name}"))
+    except ScannedDocument as exc:
+        print(f"[recheck] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    if result.status == Status.INTERRUPTED:
+        state_path = store.dir_for(args.case) / "graph_state.json"
+        state_path.write_text(json.dumps(graph.serialize_state()), encoding="utf-8")
+        _print_interrupt(result)
+        return EXIT_AWAITING_HUMAN
+
+    if result.status == Status.FAILED:
+        print("[recheck] could not proceed; see the trace below", file=sys.stderr)
+        _show(store, args.case)
+        return EXIT_CANNOT_PROCEED
+
+    _show(store, args.case)
+    return EXIT_OK
+
+
+def cmd_resume(args) -> int:
+    store = CaseStore(args.store)
+    try:
+        case = store.load(args.case)
+    except (FileNotFoundError, CaseCorrupt) as exc:
+        print(f"[recheck] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    state_path = store.dir_for(args.case) / "graph_state.json"
+    if not state_path.exists():
+        print(
+            f"[recheck] case {args.case} has no persisted graph state; nothing to resume",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_PROCEED
+
+    factory, note = _resolve_factory(args)
+    print(f"[recheck] resuming case {args.case} in a fresh process (pid {__import__('os').getpid()})")
+    print(f"[recheck] {note}")
+
+    graph = build_graph(store, args.case, case.source_path, factory)
+    graph.deserialize_state(json.loads(state_path.read_text(encoding="utf-8")))
+
+    result = asyncio.run(
+        graph.invoke_async(
+            [{"interruptResponse": {"interruptId": INTERRUPT_ID, "response": args.answer}}]
+        )
+    )
+    if result.status == Status.FAILED:
+        _show(store, args.case)
+        return EXIT_CANNOT_PROCEED
+    if result.status == Status.INTERRUPTED:
+        state_path.write_text(json.dumps(graph.serialize_state()), encoding="utf-8")
+        _print_interrupt(result)
+        return EXIT_AWAITING_HUMAN
+
+    print(f"[recheck] execution order: {[n.node_id for n in result.execution_order]}")
+    _show(store, args.case)
+    return EXIT_OK
+
+
+def cmd_show(args) -> int:
+    store = CaseStore(args.store)
+    try:
+        _show(store, args.case)
+    except (FileNotFoundError, CaseCorrupt) as exc:
+        print(f"[recheck] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+    return EXIT_OK
+
+
+def _show(store: CaseStore, case_id: str) -> None:
+    print()
+    print(render(store.load(case_id)))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="recheck", description=__doc__)
+    parser.add_argument("--store", default="runs", help="case store directory")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_model_flags(p):
+        p.add_argument("--scripted", action="store_true",
+                       help="use ScriptedModel: no network, no cost, real Strands code path")
+        p.add_argument("--classifications", default=None,
+                       help="JSON fixture of classifications for --scripted")
+        p.add_argument("--model", default=None,
+                       help="live provider id (e.g. bedrock, anthropic, ollama)")
+
+    audit = sub.add_parser("audit", help="audit a decision letter")
+    audit.add_argument("letter")
+    audit.add_argument("--case", required=True)
+    add_model_flags(audit)
+    audit.set_defaults(func=cmd_audit)
+
+    resume = sub.add_parser("resume", help="resume an interrupted case in a fresh process")
+    resume.add_argument("--case", required=True)
+    resume.add_argument("--answer", required=True,
+                        help='laterality only, e.g. "0=left,1=right"')
+    add_model_flags(resume)
+    resume.set_defaults(func=cmd_resume)
+
+    show = sub.add_parser("show", help="print a stored case report")
+    show.add_argument("--case", required=True)
+    show.set_defaults(func=cmd_show)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except ValueError as exc:
+        print(f"[recheck] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

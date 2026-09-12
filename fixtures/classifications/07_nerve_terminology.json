@@ -1,0 +1,18 @@
+{
+ "classifications": [
+  {
+   "condition": "incomplete paralysis of the left median nerve",
+   "extremity_group": "upper",
+   "laterality": "left",
+   "confidence": 0.93,
+   "rationale": "the median nerve serves the forearm and hand, an upper extremity"
+  },
+  {
+   "condition": "neuritis of the right musculospiral nerve",
+   "extremity_group": "upper",
+   "laterality": "right",
+   "confidence": 0.88,
+   "rationale": "the musculospiral (radial) nerve serves the arm, an upper extremity"
+  }
+ ]
+}

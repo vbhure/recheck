@@ -1,0 +1,18 @@
+{
+ "classifications": [
+  {
+   "condition": "incomplete paralysis of the median nerve",
+   "extremity_group": "upper",
+   "laterality": "unknown",
+   "confidence": 0.91,
+   "rationale": "median nerve is an upper extremity nerve, but the letter does not state a side"
+  },
+  {
+   "condition": "neuritis of the musculospiral nerve",
+   "extremity_group": "upper",
+   "laterality": "unknown",
+   "confidence": 0.87,
+   "rationale": "musculospiral (radial) nerve is an upper extremity nerve; side not stated"
+  }
+ ]
+}
