@@ -80,7 +80,29 @@ See [`docs/architecture.svg`](docs/architecture.svg) for the diagram. In text:
         +------------------------------------+
 ```
 
-**Interfaces.** A command-line interface (`recheck audit` / `resume` / `show`) and a plain-JSON case file per run. No web UI.
+**Interfaces.** A command line (`recheck sweep` / `audit` / `resume` / `show` / `preflight`) and a plain-JSON case file per document. No web UI.
+
+### The caseload is the product
+
+A single interactive audit demonstrates the machinery. The user is not a veteran holding one letter - it is a **County Veterans Service Officer or an accredited representative with a stack of them** - so the product shape is a sweep:
+
+```text
+CASELOAD TRIAGE  -  24 document(s)
+
+  NO ACTION NEEDED                                                      14
+  POTENTIAL DISCREPANCY - review recommended                             6
+     case_006     stated 70%   recomputed 80%   (+10, 4.26 applied)
+  AWAITING YOUR DECISION                                                 4
+     case_001     2 condition(s) need a side
+  COULD NOT PROCEED                                                      0
+
+ownership across the sweep: 303 deterministic, 32 AI, 0 human decision(s)
+4 of 24 document(s) need a human. The other 20 were resolved without one.
+```
+
+That last line is the argument. Each document gets its own durable case, so the four needing a decision can be answered later, in any order, by a different process - which is why interrupt-and-resume is load-bearing here rather than ornamental.
+
+A regression test asserts that a **majority** of any caseload is resolved without a human. If that fails it is a product failure, not a test failure: a tool that escalates most of its input is a queue generator, not an assistant.
 
 **AWS.** None is used, and none is required. Bedrock and other providers are reachable through a single adapter at the model boundary; the verified path uses no cloud service at all. See [Model providers](#model-providers).
 
@@ -88,13 +110,16 @@ See [`docs/architecture.svg`](docs/architecture.svg) for the diagram. In text:
 
 ## What the AI does
 
-Exactly one thing: classify a condition name into an extremity group and, where the document supports it, a side.
+Exactly one thing: decide which **extremity group** a condition name belongs to.
 
 ```text
 extremity_group : upper | lower | none
-laterality      : left | right | bilateral | unknown
 confidence      : 0.0 - 1.0
 ```
+
+It does **not** decide which side a condition is on. Laterality is a closed lexical set - left, right, bilateral - so deterministic code derives it from the document text and the model has no authority over it. A model that volunteers a side has that claim reconciled against the document, reported if it contradicts, and discarded either way.
+
+That was not the original design, and the original design was wrong: the model supplied laterality and a guard merely checked it, so when the model correctly answered "unknown" instead of guessing, a side printed plainly in the letter was never read. Across a 24-document sweep that escalated 15 cases to a human instead of 4. Deriving it deterministically removed the bug and shrank the model's authority in one change.
 
 This is needed because the rating schedule's vocabulary is far wider than a small lexicon. Real entries from 38 CFR Part 4 include *genu recurvatum*, *os calcis or astragalus*, *astragalectomy*, *radius and ulna*, *median nerve*, *sciatic nerve*, and *external popliteal nerve (common peroneal)* — terminology that generalises semantically but not lexically.
 
@@ -269,8 +294,9 @@ python tools/demo.py
 
 Three golden cases, using `ScriptedModel` — no network, no credential, no inference cost. Golden B uses real subprocesses, so the process death and resume are genuine.
 
-| Case | Letter | Outcome | Ownership |
+| Case | Input | Outcome | Ownership |
 |---|---|---|---|
+| **Sweep** | 24-letter caseload | 14 agree, 6 discrepancies, **4 questions** | 303 deterministic, 32 AI, 0 human |
 | A | nerve terminology, sides stated | POTENTIAL DISCREPANCY, 80% vs stated 70% | 14 deterministic, 2 AI, 0 human |
 | B | same, side never stated | interrupt → resume in a new process → 80% | 14 deterministic, 2 AI, 2 human |
 | C | correct arithmetic | NO DISCREPANCY FOUND | 10 deterministic, 0 AI, 0 human |
@@ -280,7 +306,11 @@ Golden C is the one that earns trust. A tool that always finds a problem is a to
 ### Individual commands
 
 ```bash
-# audit a letter
+# sweep a caseload: audit every document, report only the decisions
+recheck sweep fixtures/caseload --scripted \
+    --classifications fixtures/classifications/caseload.json
+
+# audit a single letter
 recheck audit fixtures/letters/07_nerve_terminology.txt --case demo1 \
     --scripted --classifications fixtures/classifications/07_nerve_terminology.json
 
@@ -379,13 +409,14 @@ Deliberately **not** used: Swarm, A2A, MCP, Cedar, AgentSkills, memory managers,
 
 ## Test suite
 
-**848 tests.** The subprocess suite takes about 40 seconds; everything else runs in under two.
+**876 tests.** The subprocess suite takes about 40 seconds; everything else runs in under two.
 
 | Area | Coverage |
 |---|---|
 | Calculation | all 684 published Table I cells · the regulations' worked examples · pairwise rounding mode fitted against the table · final-degree boundaries, monotonicity and range properties · 4.26(c) and 4.26(d) · invalid input |
 | Orchestration | graph transitions · ambiguity detection · interrupt · persistence · fresh-process resume · deleted-state resume failure · corrupt and version-mismatched cases · rejected human input · the fail-closed compute gate |
 | Model boundary | invalid enums · out-of-range and wrongly-typed confidence · missing fields · extra fields · contradictory output · fabricated laterality at high confidence · provider exceptions · no provider configured · prompt injection in document text |
+| Caseload | triage buckets - majority resolved without a human - one bad document does not stop a sweep - per-document durable state - filename-derived case ids cannot escape the store |
 | Input bounds | oversized text and PDFs refused by name · corrupt and unparseable persisted state · hand-edited case files · framework noise kept out of product output |
 | Extraction | tabular and prose formats · hard-wrapped lines · historical-percentage and rating-criteria traps · missing laterality · unparseable documents · PDF text layer parity with plain text · image-only PDF refusal |
 | Justification gate | 138 externally-labelled real condition names · coverage, abstention rate, and the zero-wrong-assertion safety property |
@@ -420,7 +451,8 @@ src/recheck/
   graph.py                   Strands graph, nodes, interrupt, safety gate
   case.py                    durable domain state, separate from graph state
   report.py                  evidence-backed report and verdict language
-  cli.py                     audit / resume / show
+  sweep.py                   caseload sweep and triage rendering
+  cli.py                     sweep / audit / resume / show / preflight
   models/scripted.py         zero-model Model implementation
   models/factory.py          live provider adapter, config, preflight, timeout
 
@@ -429,9 +461,11 @@ tools/
   fetch_cfr.py               re-extract and diff the Table I fixture
   gate_report.py             the AI justification measurement
   make_letters.py            regenerate the synthetic letters
+  make_caseload.py           regenerate the seeded 24-letter caseload
 
 fixtures/
   letters/                   8 synthetic decision letters
+  caseload/                  24 synthetic letters, seeded and reproducible
   classifications/           committed classifier responses for the demo
   cfr425_table1_points.json  684 published Table I cells
   va_condition_names.json    138 externally-labelled condition names

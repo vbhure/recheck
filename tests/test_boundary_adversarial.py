@@ -186,25 +186,49 @@ def test_fabricated_laterality_is_rejected_despite_high_confidence():
     for decision in nerve:
         assert decision.laterality == "unknown"
         assert decision.needs_human
-        assert "does not appear in the source text" in (decision.reason or "")
+        # The letter states no side, so the derived value is "unknown" and the
+        # model's confident claim is discarded and reported.
+        assert "document takes precedence" in (decision.reason or "")
     assert any("REJECTED (ungrounded)" in e.action for e in trace.entries)
 
 
 @pytest.mark.parametrize(
     "claimed,source,expected",
     [
+        # The document decides, whatever the model says.
         ("left", "paralysis of the left median nerve", "left"),
         ("right", "neuritis of the right musculospiral nerve", "right"),
-        ("left", "paralysis of the median nerve", "unknown"),
-        ("right", "paralysis of the left median nerve", "unknown"),
-        ("bilateral", "paralysis of the median nerve", "unknown"),
         ("bilateral", "bilateral pes planus", "bilateral"),
+        # No side in the text: nobody gets to invent one.
+        ("left", "paralysis of the median nerve", "unknown"),
+        ("bilateral", "paralysis of the median nerve", "unknown"),
         ("unknown", "anything at all", "unknown"),
+        # The model contradicts the document. Earlier this returned "unknown",
+        # discarding a fact the letter states plainly. The document says left,
+        # so the answer is left - the model's error is reported, not obeyed.
+        ("right", "paralysis of the left median nerve", "left"),
+        # The model abstains but the document states the side. This is the case
+        # the sweep exposed: it used to escalate to a human for no reason.
+        ("unknown", "paralysis of the left median nerve", "left"),
+        ("unknown", "neuritis of the right musculospiral nerve", "right"),
     ],
 )
-def test_grounding_rule(claimed, source, expected):
+def test_laterality_comes_from_the_document_not_the_model(claimed, source, expected):
     accepted, _ = _ground_laterality(claimed, source)
     assert accepted == expected
+
+
+def test_a_contradicting_model_claim_is_reported_even_though_the_document_wins():
+    accepted, rejection = _ground_laterality("right", "paralysis of the left median nerve")
+    assert accepted == "left"
+    assert rejection and "document takes precedence" in rejection
+
+
+def test_an_abstaining_model_produces_no_rejection_notice():
+    """Answering "unknown" is correct behaviour, not an error to report."""
+    accepted, rejection = _ground_laterality("unknown", "paralysis of the left median nerve")
+    assert accepted == "left"
+    assert rejection is None
 
 
 def test_low_confidence_routes_to_human_even_when_well_formed():
@@ -290,3 +314,36 @@ def test_evidence_is_never_fabricated():
     trace = Trace()
     trace.add(Actor.DETERMINISTIC, "Extracted rating", "x", value="10%", evidence=None)
     assert "evidence: none recorded" in trace.render()
+
+
+def test_a_stated_side_is_never_escalated_to_a_human():
+    """Regression for the defect the caseload sweep exposed.
+
+    Laterality used to come from the model. When the model correctly answered
+    "unknown" rather than guessing, the side printed in the letter was never
+    read, and conditions the document states plainly were escalated. Across a
+    24-document sweep that put 15 cases in front of a human instead of 4 -
+    which destroys the product's entire argument, since the claim is that it
+    resolves what it can and asks only about what it cannot.
+    """
+    extraction = parse(_read(LETTER_SIDE_STATED))
+    trace = Trace()
+    decisions = classify(
+        extraction.ratings,
+        trace,
+        # The model classifies the group and abstains on the side, which is
+        # exactly what it should do.
+        _factory(
+            _batch(
+                _c(condition="incomplete paralysis of the left median nerve",
+                   extremity_group="upper", laterality="unknown", confidence=0.93),
+                _c(condition="neuritis of the right musculospiral nerve",
+                   extremity_group="upper", laterality="unknown", confidence=0.88),
+            )
+        ),
+    )
+    nerve = [d for d in decisions if "nerve" in d.condition]
+    assert len(nerve) == 2
+    assert {d.laterality for d in nerve} == {"left", "right"}
+    assert not any(d.needs_human for d in nerve), "a stated side must not need a human"
+    assert all(d.safe_for_pairing for d in nerve)

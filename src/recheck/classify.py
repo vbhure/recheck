@@ -93,19 +93,46 @@ def _side_tokens_present(text: str) -> set[str]:
     return found
 
 
-def _ground_laterality(claimed: str, source_text: str) -> tuple[str, str | None]:
-    """Reject a side the source document does not support.
+def derive_laterality(source_text: str) -> str:
+    """Determine which side a condition is on, from the document alone.
 
-    Returns the accepted laterality and, if the claim was rejected, why.
+    Laterality is a CLOSED lexical set - left, right, bilateral - so it is
+    deterministic code's job, not the model's. The model decides the extremity
+    GROUP, which needs open-vocabulary anatomical knowledge; it has no
+    authority over the side at all.
+
+    This was not the original design, and the original design was wrong. The
+    model supplied laterality and the grounding guard merely checked it. When
+    the model correctly answered "unknown" rather than guessing, the side
+    sitting in the document was never picked up, and conditions that the letter
+    states plainly were escalated to a human for no reason - 15 of 24 documents
+    in a sweep instead of 4. Deriving it here fixes that and shrinks the
+    model's authority at the same time.
     """
-    if claimed == "unknown":
-        return "unknown", None
     present = _side_tokens_present(source_text)
-    if claimed == "bilateral" and "bilateral" not in present and present != {"left", "right"}:
-        return "unknown", "model asserted 'bilateral' but the source text does not support it"
-    if claimed in ("left", "right") and claimed not in present:
-        return "unknown", f"model asserted '{claimed}' but that word does not appear in the source text"
-    return claimed, None
+    if "bilateral" in present or present == {"left", "right"}:
+        return "bilateral"
+    if present == {"left"}:
+        return "left"
+    if present == {"right"}:
+        return "right"
+    return "unknown"
+
+
+def _ground_laterality(claimed: str, source_text: str) -> tuple[str, str | None]:
+    """Reconcile a model-claimed side against the document. The document wins.
+
+    Kept as the guard for a model that volunteers a side anyway: a claim that
+    contradicts the text is reported and discarded. The returned value is
+    always the DERIVED one, so a model can never introduce a side of its own.
+    """
+    derived = derive_laterality(source_text)
+    if claimed in ("left", "right", "bilateral") and claimed != derived:
+        return derived, (
+            f"model asserted '{claimed}' but the source text supports "
+            f"{derived!r}; the document takes precedence"
+        )
+    return derived, None
 
 
 def classify(

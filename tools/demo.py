@@ -70,6 +70,30 @@ def cli(*args: str, expect: int | None = None) -> subprocess.CompletedProcess:
     return result
 
 
+def golden_sweep() -> None:
+    banner(
+        "THE PRODUCT - a caseload, worked through unattended",
+        "24 synthetic decision letters; only the decisions come back to you",
+    )
+    print("""
+  The user is not a veteran holding one letter. It is a County Veterans
+  Service Officer, or an accredited representative, with a stack of them.
+
+  So this is the product: point it at the stack, walk away, and read the
+  triage. Everything the system can establish from the documents themselves
+  it finishes on its own. What it cannot establish - which side a condition
+  is on, when the letter never says - comes back as a question.
+
+  Watch the last line of the triage. That is the whole argument.""")
+    step("sweep the caseload")
+    cli("sweep", LETTERS.parent / "caseload", "--scripted",
+        "--classifications", CLASSIFICATIONS / "caseload.json", expect=2)
+    print("""
+  Each of those 24 documents now has its own durable case on disk. The ones
+  needing a decision can be answered later, in any order, by a different
+  process - which is the next case.""")
+
+
 def golden_a() -> None:
     banner(
         "GOLDEN A - a discrepancy the deterministic layer could not have found alone",
@@ -147,6 +171,8 @@ def golden_c() -> None:
 def closing() -> None:
     banner("WHAT JUST HAPPENED")
     print("""
+  Across the caseload: 24 documents in, 4 questions out.
+
   DETERMINISTIC   parsed the percentages and the stated combined value;
                   recognised the anatomy it actually knows; identified the
                   4.26 pair; did every piece of arithmetic. Verified against
@@ -170,7 +196,7 @@ def closing() -> None:
     print(WIDE)
 
 
-CASES = {"a": golden_a, "b": golden_b, "c": golden_c}
+CASES = {"sweep": golden_sweep, "a": golden_a, "b": golden_b, "c": golden_c}
 
 
 def main() -> int:
@@ -194,7 +220,7 @@ def main() -> int:
   band. It depends on a judgment about which conditions affect paired
   extremities, and letters do not always say.""")
 
-    selected = [CASES[args.case]] if args.case else [golden_a, golden_b, golden_c]
+    selected = [CASES[args.case]] if args.case else [golden_sweep, golden_a, golden_b, golden_c]
     for case in selected:
         case()
     if not args.case:

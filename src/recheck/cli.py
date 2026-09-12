@@ -3,6 +3,7 @@
     recheck audit     <letter> --case ID [--scripted | --model PROVIDER]
     recheck resume    --case ID --answer "0=left,1=right"
     recheck show      --case ID
+    recheck sweep     <directory> [--scripted | --model PROVIDER]
     recheck preflight [--model PROVIDER]
 
 The two-command shape is not a convenience. `audit` may stop at an
@@ -28,6 +29,7 @@ import sys
 from strands.multiagent.base import Status
 
 from recheck.case import CaseCorrupt, CaseStore
+from recheck.sweep import Outcome, render_triage, sweep
 from recheck.graph import (
     INTERRUPT_ID,
     DocumentTooLarge,
@@ -47,7 +49,21 @@ SCRIPTED_NOTE = (
 
 
 def _scripted_factory(fixture: pathlib.Path | None):
-    """Build an agent whose model replays a committed classification fixture."""
+    """Build an agent whose model replays a committed classification fixture.
+
+    Two fixture shapes are supported:
+
+      BATCH  {"classifications": [...]} - a fixed answer, for a single letter
+             whose conditions are known in advance.
+      MAP    {"anatomy": {substring: group}} - answers whatever it is asked,
+             which a sweep across many letters needs. Still a fixture, not a
+             model: it cannot generalise beyond the substrings it lists, and
+             anything it does not recognise comes back "none", which routes to
+             human review exactly as an uncertain model would.
+
+    Laterality is never taken from the fixture. The grounding guard re-derives
+    it from the source text regardless of what any classifier claims.
+    """
     from strands import Agent
 
     from recheck.classify import SYSTEM_PROMPT
@@ -57,6 +73,40 @@ def _scripted_factory(fixture: pathlib.Path | None):
         payload = {"classifications": []}
     else:
         payload = json.loads(fixture.read_text(encoding="utf-8"))
+
+    anatomy = payload.get("anatomy")
+    if anatomy:
+        confidence = float(payload.get("confidence", 0.9))
+
+        def responder(_tool, messages):
+            text = ""
+            for block in messages[-1].get("content", []):
+                text += block.get("text", "")
+            out = []
+            for line in text.splitlines():
+                if not line.startswith("- "):
+                    continue
+                name = line[2:].strip()
+                low = name.lower()
+                group = next((g for key, g in anatomy.items() if key in low), "none")
+                out.append({
+                    "condition": name,
+                    "extremity_group": group,
+                    # Never assert a side from a fixture; let grounding decide.
+                    "laterality": "unknown",
+                    "confidence": confidence,
+                    "rationale": "committed anatomy fixture (zero-model path)",
+                })
+            return {"classifications": out or [{
+                "condition": "none", "extremity_group": "none",
+                "laterality": "unknown", "confidence": confidence, "rationale": "no input",
+            }]}
+
+        def make():
+            return Agent(model=ScriptedModel(responder=responder),
+                         system_prompt=SYSTEM_PROMPT, callback_handler=None)
+
+        return make
 
     def make():
         # callback_handler=None suppresses Strands' default stdout handler,
@@ -90,6 +140,11 @@ def _resolve_factory(args) -> tuple[object | None, str]:
 
 def _print_interrupt(result) -> None:
     for interrupt in result.interrupts:
+        _print_interrupt_reason(interrupt)
+
+
+def _print_interrupt_reason(interrupt) -> None:
+    if interrupt is not None:
         reason = interrupt.reason or {}
         print()
         print("=" * 74)
@@ -113,6 +168,29 @@ def _print_interrupt(result) -> None:
         print("=" * 74)
 
 
+def _run_audit(store: CaseStore, case_id: str, source: pathlib.Path, factory) -> Outcome:
+    """Audit one document. Shared by `audit` and `sweep` so they cannot drift."""
+    graph = build_graph(store, case_id, str(source), factory)
+    try:
+        result = asyncio.run(graph.invoke_async(f"audit {source.name}"))
+    except (ScannedDocument, DocumentTooLarge) as exc:
+        return Outcome(case_id, Outcome.FAILED, str(exc))
+    except Exception as exc:  # noqa: BLE001 - one bad document must not stop a sweep
+        return Outcome(case_id, Outcome.FAILED, f"{type(exc).__name__}: {exc}")
+
+    if result.status == Status.INTERRUPTED:
+        (store.dir_for(case_id) / "graph_state.json").write_text(
+            json.dumps(graph.serialize_state()), encoding="utf-8"
+        )
+        interrupt = result.interrupts[0] if result.interrupts else None
+        return Outcome(case_id, Outcome.AWAITING_HUMAN, interrupt=interrupt)
+
+    problem = _completed_cleanly(store, case_id)
+    if result.status == Status.FAILED or problem:
+        return Outcome(case_id, Outcome.FAILED, problem or "graph reported failure")
+    return Outcome(case_id, Outcome.COMPLETE)
+
+
 def cmd_audit(args) -> int:
     store = CaseStore(args.store)
     source = pathlib.Path(args.letter)
@@ -123,30 +201,17 @@ def cmd_audit(args) -> int:
     factory, note = _resolve_factory(args)
     print(f"[recheck] {note}")
 
-    graph = build_graph(store, args.case, str(source), factory)
-    try:
-        result = asyncio.run(graph.invoke_async(f"audit {source.name}"))
-    except (ScannedDocument, DocumentTooLarge) as exc:
-        print(f"[recheck] {exc}", file=sys.stderr)
+    outcome = _run_audit(store, args.case, source, factory)
+    if outcome.state == Outcome.FAILED:
+        print(f"[recheck] {outcome.detail}", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
-
-    if result.status == Status.INTERRUPTED:
-        state_path = store.dir_for(args.case) / "graph_state.json"
-        state_path.write_text(json.dumps(graph.serialize_state()), encoding="utf-8")
-        _print_interrupt(result)
+    if outcome.state == Outcome.AWAITING_HUMAN:
+        _print_interrupt_reason(outcome.interrupt)
         return EXIT_AWAITING_HUMAN
-
-    if result.status == Status.FAILED:
-        print("[recheck] could not proceed; see the trace below", file=sys.stderr)
-        _show(store, args.case)
-        return EXIT_CANNOT_PROCEED
-
-    problem = _completed_cleanly(store, args.case)
-    if problem:
-        print(f"[recheck] {problem}", file=sys.stderr)
-        return EXIT_CANNOT_PROCEED
     _show(store, args.case)
     return EXIT_OK
+
+
 
 
 def cmd_resume(args) -> int:
@@ -215,6 +280,30 @@ def cmd_resume(args) -> int:
         return EXIT_CANNOT_PROCEED
     _show(store, args.case)
     return EXIT_OK
+
+
+def cmd_sweep(args) -> int:
+    store = CaseStore(args.store)
+    directory = pathlib.Path(args.directory)
+    if not directory.is_dir():
+        print(f"[recheck] not a directory: {directory}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    from recheck.sweep import documents_in
+
+    documents = documents_in(directory)
+    if not documents:
+        print(f"[recheck] no .txt or .pdf documents in {directory}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    factory, note = _resolve_factory(args)
+    print(f"[recheck] sweeping {len(documents)} document(s) from {directory}")
+    print(f"[recheck] {note}")
+    print()
+
+    outcomes, code = sweep(store, directory, factory, _run_audit)
+    print(render_triage(store, outcomes))
+    return code
 
 
 def cmd_preflight(args) -> int:
@@ -320,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help='laterality only, e.g. "0=left,1=right"')
     add_model_flags(resume)
     resume.set_defaults(func=cmd_resume)
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="audit a directory of documents unattended and report only the decisions",
+    )
+    sweep.add_argument("directory")
+    add_model_flags(sweep)
+    sweep.set_defaults(func=cmd_sweep)
 
     show = sub.add_parser("show", help="print a stored case report")
     show.add_argument("--case", required=True)
