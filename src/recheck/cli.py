@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import pathlib
 import sys
 
@@ -29,6 +30,7 @@ from strands.multiagent.base import Status
 from recheck.case import CaseCorrupt, CaseStore
 from recheck.graph import (
     INTERRUPT_ID,
+    DocumentTooLarge,
     ScannedDocument,
     build_graph,
 )
@@ -124,7 +126,7 @@ def cmd_audit(args) -> int:
     graph = build_graph(store, args.case, str(source), factory)
     try:
         result = asyncio.run(graph.invoke_async(f"audit {source.name}"))
-    except ScannedDocument as exc:
+    except (ScannedDocument, DocumentTooLarge) as exc:
         print(f"[recheck] {exc}", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
 
@@ -139,6 +141,10 @@ def cmd_audit(args) -> int:
         _show(store, args.case)
         return EXIT_CANNOT_PROCEED
 
+    problem = _completed_cleanly(store, args.case)
+    if problem:
+        print(f"[recheck] {problem}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
     _show(store, args.case)
     return EXIT_OK
 
@@ -164,7 +170,30 @@ def cmd_resume(args) -> int:
     print(f"[recheck] {note}")
 
     graph = build_graph(store, args.case, case.source_path, factory)
-    graph.deserialize_state(json.loads(state_path.read_text(encoding="utf-8")))
+
+    # The persisted graph state is untrusted input like anything else on disk.
+    # Handing it straight to the framework turned a JSON array into an
+    # unhandled AttributeError from inside deserialize_state - a stack trace
+    # instead of an explanation. Validate the shape, then treat any
+    # deserialisation failure as a corrupt case rather than a crash.
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"[recheck] persisted graph state for {args.case} is not valid JSON: {exc}",
+              file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+    if not isinstance(payload, dict):
+        print(f"[recheck] persisted graph state for {args.case} is a "
+              f"{type(payload).__name__}, expected an object. The case is corrupt; "
+              f"delete it and re-run the audit.", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+    try:
+        graph.deserialize_state(payload)
+    except Exception as exc:  # noqa: BLE001 - any failure here means a corrupt case
+        print(f"[recheck] persisted graph state for {args.case} could not be restored "
+              f"({type(exc).__name__}). The case is corrupt; delete it and re-run the "
+              f"audit.", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
 
     result = asyncio.run(
         graph.invoke_async(
@@ -180,6 +209,10 @@ def cmd_resume(args) -> int:
         return EXIT_AWAITING_HUMAN
 
     print(f"[recheck] execution order: {[n.node_id for n in result.execution_order]}")
+    problem = _completed_cleanly(store, args.case)
+    if problem:
+        print(f"[recheck] {problem}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
     _show(store, args.case)
     return EXIT_OK
 
@@ -226,6 +259,32 @@ def cmd_show(args) -> int:
     return EXIT_OK
 
 
+def _completed_cleanly(store: CaseStore, case_id: str) -> str | None:
+    """Post-condition for a run that claims success. Returns a reason on failure.
+
+    A graph can report COMPLETED while having executed nothing - a corrupted
+    graph_state.json deserialises into a state with no pending work, the run
+    is a silent no-op, and the exit code says success. That is worse than a
+    crash, because the operator believes the audit ran.
+
+    So success is defined by the PRODUCT outcome, not the framework's status:
+    the case must be complete and must carry a recomputed degree.
+    """
+    try:
+        case = store.load(case_id)
+    except Exception as exc:  # noqa: BLE001 - any unreadable case is a failure here
+        return f"case could not be re-read after the run: {exc}"
+    if case.status != "complete":
+        return (
+            f"the run reported success but the case status is {case.status!r}. "
+            f"Nothing was computed. If this case was resumed, its persisted state "
+            f"may be corrupt - delete it and re-run the audit."
+        )
+    if case.recomputed_degree is None:
+        return "the run reported success but produced no recomputed evaluation"
+    return None
+
+
 def _show(store: CaseStore, case_id: str) -> None:
     print()
     print(render(store.load(case_id)))
@@ -234,6 +293,11 @@ def _show(store: CaseStore, case_id: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="recheck", description=__doc__)
     parser.add_argument("--store", default="runs", help="case store directory")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="show framework logging (Strands node/graph internals), normally suppressed",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_model_flags(p):
@@ -270,8 +334,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging(debug: bool) -> None:
+    """Keep framework logging out of product output.
+
+    Strands logs node and graph failures at ERROR, so a deliberate refusal -
+    an oversized document, a scanned PDF - printed a stack of "node failed /
+    graph execution failed" lines underneath Recheck's own one-line
+    explanation. The refusal is the product behaving correctly; the framework
+    trace is noise that makes it look like a crash. --debug restores it.
+    """
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    if not debug:
+        for name in ("strands", "strands.multiagent", "strands.event_loop", "botocore", "urllib3"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _configure_logging(getattr(args, "debug", False))
     try:
         return args.func(args)
     except ValueError as exc:

@@ -75,14 +75,39 @@ def _resume_answer(task: Any) -> str | None:
     return None
 
 
+# A rating decision is a handful of pages. These caps are generous by an order
+# of magnitude and exist so that a hostile or accidental input cannot exhaust
+# memory: an unbounded read of a multi-gigabyte file, or a PDF decompression
+# bomb whose page count explodes on parse.
+MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_PDF_PAGES = 100
+
+
 def read_document(path: str | pathlib.Path) -> str:
-    """Load letter text. PDFs must carry a text layer; OCR is out of scope."""
+    """Load letter text. PDFs must carry a text layer; OCR is out of scope.
+
+    Input is bounded. Documents are untrusted, and refusing an implausible
+    one by name is better than dying of memory exhaustion halfway through.
+    """
     p = pathlib.Path(path)
+    size = p.stat().st_size  # raises FileNotFoundError for a missing path
+    if size > MAX_DOCUMENT_BYTES:
+        raise DocumentTooLarge(
+            f"{p.name} is {size / 1024 / 1024:.1f} MB, over the "
+            f"{MAX_DOCUMENT_BYTES / 1024 / 1024:.0f} MB limit. A rating decision is a "
+            f"few pages; refusing rather than loading it."
+        )
+
     if p.suffix.lower() == ".pdf":
         from pypdf import PdfReader
 
-        pages = [page.extract_text() or "" for page in PdfReader(str(p)).pages]
-        text = "\n".join(pages)
+        reader = PdfReader(str(p))
+        page_count = len(reader.pages)
+        if page_count > MAX_PDF_PAGES:
+            raise DocumentTooLarge(
+                f"{p.name} has {page_count} pages, over the {MAX_PDF_PAGES}-page limit."
+            )
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
         if not text.strip():
             raise ScannedDocument(
                 f"{p.name} has no extractable text layer. This document requires OCR, "
@@ -95,6 +120,10 @@ def read_document(path: str | pathlib.Path) -> str:
 
 class ScannedDocument(Exception):
     """The document is an image. Recheck refuses rather than guessing."""
+
+
+class DocumentTooLarge(Exception):
+    """The document exceeds the bounds of anything plausibly a decision letter."""
 
 
 # ---------------------------------------------------------------------------

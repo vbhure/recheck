@@ -379,13 +379,14 @@ Deliberately **not** used: Swarm, A2A, MCP, Cedar, AgentSkills, memory managers,
 
 ## Test suite
 
-**802 tests.** The subprocess suite takes about 40 seconds; everything else runs in under two.
+**848 tests.** The subprocess suite takes about 40 seconds; everything else runs in under two.
 
 | Area | Coverage |
 |---|---|
 | Calculation | all 684 published Table I cells · the regulations' worked examples · pairwise rounding mode fitted against the table · final-degree boundaries, monotonicity and range properties · 4.26(c) and 4.26(d) · invalid input |
 | Orchestration | graph transitions · ambiguity detection · interrupt · persistence · fresh-process resume · deleted-state resume failure · corrupt and version-mismatched cases · rejected human input · the fail-closed compute gate |
 | Model boundary | invalid enums · out-of-range and wrongly-typed confidence · missing fields · extra fields · contradictory output · fabricated laterality at high confidence · provider exceptions · no provider configured · prompt injection in document text |
+| Input bounds | oversized text and PDFs refused by name · corrupt and unparseable persisted state · hand-edited case files · framework noise kept out of product output |
 | Extraction | tabular and prose formats · hard-wrapped lines · historical-percentage and rating-criteria traps · missing laterality · unparseable documents · PDF text layer parity with plain text · image-only PDF refusal |
 | Justification gate | 138 externally-labelled real condition names · coverage, abstention rate, and the zero-wrong-assertion safety property |
 
@@ -452,7 +453,24 @@ Fetched via the official **eCFR API** rather than scraped; `www.ecfr.gov` serves
 
 ## Security
 
-Documents are untrusted input. Document text cannot override agent instructions; the extraction node emits typed records rather than passing raw page content downstream, so fetched prose never re-enters in system-prompt position. Model output is schema-validated with unexpected fields rejected. A side unsupported by the source text is refused regardless of stated confidence. Invalid human input cannot reach the calculation stage. Persisted state is validated on load and refused on schema mismatch. Case identifiers are checked so they cannot escape the store directory. No credentials are stored in the repository, and the zero-model path performs no external transmission.
+Documents are untrusted input. Document text cannot override agent instructions; the extraction node emits typed records rather than passing raw page content downstream, so fetched prose never re-enters in system-prompt position. Model output is schema-validated with unexpected fields rejected. A side unsupported by the source text is refused regardless of stated confidence. Invalid human input cannot reach the calculation stage. Case identifiers are checked so they cannot escape the store directory. No credentials are stored in the repository, and the zero-model path performs no external transmission.
+
+`src/` contains no `eval`, `exec`, `pickle`, `os.system` or `shell=True`. Five direct dependencies, pinned.
+
+### Findings from the pre-release review
+
+The review attacked the running product rather than reading the code, and found four defects. **None produced a wrong rating** — the fail-closed gate and the answer validation held throughout — but two let a run that had computed nothing report success, which for an audit tool is its own kind of wrong: the operator believes the letter was checked.
+
+| | Finding | Fix |
+|---|---|---|
+| D1 | A corrupted `graph_state.json` deserialised into a state with no pending work. The graph reported `COMPLETED`, executed no nodes, and the CLI **exited 0**. | Success is now defined by the *product* outcome — the case must be complete and carry a recomputed degree — rather than by the framework's status. |
+| D2 | `read_document` had no size limit. A 40 MB file read in 0.09s; a multi-gigabyte one exhausts memory, and PDF decompression bombs are a known vector. | Byte cap (8 MB) and page cap (100). |
+| D3 | Strands logs node failures at ERROR, so a *deliberate* refusal printed "node failed / graph execution failed" beneath Recheck's own explanation — correct behaviour looking like a crash. | Framework logging suppressed; `--debug` restores it. |
+| D4 | The persisted graph state was passed to the framework unvalidated. A JSON array produced an unhandled `AttributeError` from inside `deserialize_state`. Found by parametrising D1's test over several corrupt payloads instead of one. | Shape validated; any deserialisation failure is treated as a corrupt case. |
+
+**What held up:** hand-editing `case.json` to inject a fabricated laterality and mark it human-resolved does **not** produce arithmetic. That is pinned by a regression test.
+
+Each finding has a regression test in [`tests/test_security_hardening.py`](tests/test_security_hardening.py).
 
 ---
 
