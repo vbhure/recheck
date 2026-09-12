@@ -307,17 +307,53 @@ pytest                                              # everything
 pytest --ignore=tests/test_cross_process_resume.py  # skip the subprocess suite
 python tools/gate_report.py                         # the AI justification measurement
 python tools/fetch_cfr.py                           # re-verify the Table I fixture
+recheck preflight --model bedrock                   # check provider config, no inference
 ```
 
 ---
 
 ## Model providers
 
-The zero-model path is the architecture; a live provider is an adapter at the edge.
+The zero-model path is the architecture. A live provider is an adapter at the edge, and **provider availability never determines whether the core product works.**
 
 `ScriptedModel` (`src/recheck/models/scripted.py`) is **not** a mock that bypasses Strands. It implements `stream()` and emits the same tool-use event sequence a real provider emits, so structured output is parsed and validated by Strands' own machinery. The adversarial tests therefore drive malformed payloads through the real validation path rather than around it.
 
-`src/recheck/models/factory.py` is the live-provider seam. It currently raises `NotImplementedError` by design rather than silently falling back, so a run cannot claim a provider it did not use.
+`src/recheck/models/factory.py` is the live seam. Supported: `bedrock` (bundled), `anthropic` and `ollama` (each needs a pip extra, and the error names the exact install command).
+
+### Credentials are not ours
+
+Recheck never reads, stores, logs or prints a credential. Each provider resolves its own through its own standard mechanism — the AWS credential chain, or `ANTHROPIC_API_KEY`. Preflight reports only whether a credential could be **resolved**, and for AWS it reports the *method* (`via shared-credentials-file`), never any key material. A test asserts that planted credential values cannot appear in preflight output.
+
+### Check configuration without spending anything
+
+```bash
+recheck preflight --model bedrock
+```
+
+This makes **no inference call**. It verifies the provider is known, the SDK is importable, a model id and region are set, and a credential is resolvable — then states plainly that a live run *will* consume credits.
+
+```text
+  [PASS]  provider known              bedrock
+  [PASS]  provider SDK importable     strands.models.bedrock.BedrockModel
+  [PASS]  region configured           us-west-2
+  [FAIL]  credentials resolvable      the AWS credential chain resolved nothing
+  [PASS]  single-call contract        one structured classification call per letter
+  [PASS]  prompt minimisation         condition names only; no percentages, no letter text
+```
+
+Configuration comes from `RECHECK_PROVIDER`, `RECHECK_MODEL_ID`, `RECHECK_REGION`, `RECHECK_OLLAMA_HOST`, `RECHECK_TIMEOUT_S`, `RECHECK_MAX_TOKENS`. See [`.env.example`](.env.example).
+
+### What a live run costs, and what it sends
+
+**One structured call per letter.** No agent loop, no tool use, no re-prompting — `limits={"turns": 1}` bounds it, because Strands otherwise retries a structured output that fails validation.
+
+**Only condition names are transmitted.** The percentages, the stated combined evaluation, the file number and the rest of the letter never leave the machine, because the classification task does not need them. Temperature is 0 for reproducibility.
+
+### Failure is uniform and safe
+
+Timeout, API error, unavailable provider, misconfiguration, malformed output and unsupported content all produce the same outcome: the affected conditions route to `UNKNOWN / HUMAN REVIEW`. Nothing is fabricated or substituted, and no confidence value is invented.
+
+`BoundedAgent` adds a **wall-clock** budget on top of Strands' turn limit, and signals cancellation to the underlying call rather than merely abandoning it — a provider that accepts a connection and then stalls would otherwise hang a terminal tool indefinitely.
 
 ---
 
@@ -366,7 +402,7 @@ Stated as product boundaries, not hidden failures.
 - Laterality often requires a human. That is the design, not a gap.
 - Only a single bilateral pair is selected per case. Multi-pair and four-extremity procedures under 4.26(b) are not implemented.
 - Recheck makes no legal determination about a decision's correctness.
-- Live provider integration is deliberately unwired.
+- Live provider classification quality is unmeasured. The seam is built, configurable and tested against provider-independent doubles, but no live inference has been run, so no accuracy claim is made.
 
 ---
 
@@ -385,7 +421,7 @@ src/recheck/
   report.py                  evidence-backed report and verdict language
   cli.py                     audit / resume / show
   models/scripted.py         zero-model Model implementation
-  models/factory.py          live provider seam (unwired by design)
+  models/factory.py          live provider adapter, config, preflight, timeout
 
 tools/
   demo.py                    the three golden cases

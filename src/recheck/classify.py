@@ -253,9 +253,13 @@ def _ask_model(
     names: Sequence[str], agent_factory: AgentFactory, trace: Trace
 ) -> ClassificationBatch | None:
     """One bounded, validated model call. Returns None on any failure."""
-    agent = agent_factory()
     prompt = "Classify each of these condition names:\n" + "\n".join(f"- {n}" for n in names)
     try:
+        # Constructing the agent is inside the try deliberately. A provider
+        # that is unavailable or misconfigured raises HERE rather than at call
+        # time, and an unhandled failure at this point would crash the run
+        # instead of routing the affected conditions to human review.
+        agent = agent_factory()
         # limits={"turns": 1} is load-bearing: Strands retries a structured
         # output that fails validation, and an unbounded retry against a
         # persistently invalid response recurses until RecursionError.

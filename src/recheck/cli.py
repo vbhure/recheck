@@ -1,8 +1,9 @@
 """Recheck command line.
 
-    recheck audit  <letter> --case ID [--scripted | --model PROVIDER]
-    recheck resume --case ID --answer "0=left,1=right"
-    recheck show   --case ID
+    recheck audit     <letter> --case ID [--scripted | --model PROVIDER]
+    recheck resume    --case ID --answer "0=left,1=right"
+    recheck show      --case ID
+    recheck preflight [--model PROVIDER]
 
 The two-command shape is not a convenience. `audit` may stop at an
 interrupt and exit; `resume` is a DIFFERENT PROCESS that restores state from
@@ -75,7 +76,10 @@ def _resolve_factory(args) -> tuple[object | None, str]:
     if getattr(args, "model", None):
         from recheck.models.factory import build_agent_factory
 
-        return build_agent_factory(args.model), f"live model provider: {args.model}"
+        factory = build_agent_factory(args.model)
+        config = getattr(factory, "config", None)
+        detail = config.describe() if config is not None else args.model
+        return factory, f"LIVE model provider: {detail}"
     return None, (
         "no classifier configured: conditions outside the deterministic lexicon will be "
         "routed to human review rather than guessed"
@@ -180,6 +184,38 @@ def cmd_resume(args) -> int:
     return EXIT_OK
 
 
+def cmd_preflight(args) -> int:
+    """Validate provider configuration without making an inference call."""
+    from recheck.models.factory import (
+        ProviderNotConfigured,
+        load_config,
+        preflight,
+    )
+
+    try:
+        config = load_config(getattr(args, "model", None))
+    except ProviderNotConfigured as exc:
+        print(f"[recheck] {exc}", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
+
+    print(f"[recheck] preflight for {config.describe()}")
+    print("[recheck] no inference call is made by this command")
+    print()
+    failed = 0
+    for check in preflight(config):
+        mark = "PASS" if check.ok else "FAIL"
+        if not check.ok:
+            failed += 1
+        print(f"  [{mark}]  {check.name:26}  {check.detail}")
+    print()
+    if failed:
+        print(f"[recheck] {failed} check(s) failed; live inference would not succeed.")
+        print("[recheck] the zero-cost path is unaffected: use --scripted.")
+        return EXIT_CANNOT_PROCEED
+    print("[recheck] configuration is ready. A live run WILL consume provider credits.")
+    return EXIT_OK
+
+
 def cmd_show(args) -> int:
     store = CaseStore(args.store)
     try:
@@ -224,6 +260,13 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="print a stored case report")
     show.add_argument("--case", required=True)
     show.set_defaults(func=cmd_show)
+
+    pre = sub.add_parser(
+        "preflight",
+        help="validate live-provider configuration WITHOUT making an inference call",
+    )
+    pre.add_argument("--model", default=None, help="provider id; defaults to RECHECK_PROVIDER")
+    pre.set_defaults(func=cmd_preflight)
     return parser
 
 
@@ -234,6 +277,13 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"[recheck] {exc}", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
+    except Exception as exc:  # provider misconfiguration, unreadable case, etc.
+        from recheck.models.factory import ProviderError
+
+        if isinstance(exc, ProviderError):
+            print(f"[recheck] {exc}", file=sys.stderr)
+            return EXIT_CANNOT_PROCEED
+        raise
 
 
 if __name__ == "__main__":
