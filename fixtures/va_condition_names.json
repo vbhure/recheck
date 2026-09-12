@@ -1,0 +1,692 @@
+[
+ {
+  "dc": 5200,
+  "name": "Scapulohumeral articulation, ankylosis.",
+  "group": "upper"
+ },
+ {
+  "dc": 5203,
+  "name": "Clavicle or scapula, impairment.",
+  "group": "upper"
+ },
+ {
+  "dc": 5205,
+  "name": "Elbow, ankylosis.",
+  "group": "upper"
+ },
+ {
+  "dc": 5206,
+  "name": "Forearm, limitation of flexion.",
+  "group": "upper"
+ },
+ {
+  "dc": 5207,
+  "name": "Forearm, limitation of extension.",
+  "group": "upper"
+ },
+ {
+  "dc": 5208,
+  "name": "Forearm, flexion limited.",
+  "group": "upper"
+ },
+ {
+  "dc": 5209,
+  "name": "Elbow, other impairment.",
+  "group": "upper"
+ },
+ {
+  "dc": 5210,
+  "name": "Radius and ulna, nonunion.",
+  "group": "upper"
+ },
+ {
+  "dc": 5213,
+  "name": "Supination and pronation, impairment.",
+  "group": "upper"
+ },
+ {
+  "dc": 5215,
+  "name": "Wrist, limitation of motion.",
+  "group": "upper"
+ },
+ {
+  "dc": 5221,
+  "name": "Four digits of one hand.",
+  "group": "upper"
+ },
+ {
+  "dc": 5222,
+  "name": "Three digits of one hand.",
+  "group": "upper"
+ },
+ {
+  "dc": 5250,
+  "name": "Hip, ankylosis.",
+  "group": "lower"
+ },
+ {
+  "dc": 5251,
+  "name": "Thigh, limitation of extension.",
+  "group": "lower"
+ },
+ {
+  "dc": 5252,
+  "name": "Thigh, limitation of flexion.",
+  "group": "lower"
+ },
+ {
+  "dc": 5253,
+  "name": "Thigh, impairment.",
+  "group": "lower"
+ },
+ {
+  "dc": 5254,
+  "name": "Hip, flail joint.",
+  "group": "lower"
+ },
+ {
+  "dc": 5256,
+  "name": "Knee, ankylosis.",
+  "group": "lower"
+ },
+ {
+  "dc": 5258,
+  "name": "Cartilage, semilunar, dislocated.",
+  "group": "lower"
+ },
+ {
+  "dc": 5259,
+  "name": "Cartilage, semilunar, removal.",
+  "group": "lower"
+ },
+ {
+  "dc": 5260,
+  "name": "Leg, limitation of flexion.",
+  "group": "lower"
+ },
+ {
+  "dc": 5261,
+  "name": "Leg, limitation of extension.",
+  "group": "lower"
+ },
+ {
+  "dc": 5263,
+  "name": "Genu recurvatum.",
+  "group": "lower"
+ },
+ {
+  "dc": 5270,
+  "name": "Ankle, ankylosis.",
+  "group": "lower"
+ },
+ {
+  "dc": 5272,
+  "name": "Subastragalar or tarsal joint, ankylosis.",
+  "group": "lower"
+ },
+ {
+  "dc": 5273,
+  "name": "Os calcis or astragalus, malunion.",
+  "group": "lower"
+ },
+ {
+  "dc": 5274,
+  "name": "Astragalectomy.",
+  "group": "lower"
+ },
+ {
+  "dc": 6200,
+  "name": "Chronic suppurative otitis media.",
+  "group": "none"
+ },
+ {
+  "dc": 6201,
+  "name": "Chronic nonsuppurative otitis media.",
+  "group": "none"
+ },
+ {
+  "dc": 6202,
+  "name": "Otosclerosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6204,
+  "name": "Peripheral vestibular disorders.",
+  "group": "none"
+ },
+ {
+  "dc": 6205,
+  "name": "Meniere's syndrome.",
+  "group": "none"
+ },
+ {
+  "dc": 6207,
+  "name": "Loss of auricle.",
+  "group": "none"
+ },
+ {
+  "dc": 6208,
+  "name": "Malignant neoplasm.",
+  "group": "none"
+ },
+ {
+  "dc": 6209,
+  "name": "Benign neoplasm.",
+  "group": "none"
+ },
+ {
+  "dc": 6210,
+  "name": "Chronic otitis externa.",
+  "group": "none"
+ },
+ {
+  "dc": 6211,
+  "name": "Tympanic membrane.",
+  "group": "none"
+ },
+ {
+  "dc": 6260,
+  "name": "Tinnitus, recurrent.",
+  "group": "none"
+ },
+ {
+  "dc": 6275,
+  "name": "Smell, complete loss.",
+  "group": "none"
+ },
+ {
+  "dc": 6276,
+  "name": "Taste, complete loss.",
+  "group": "none"
+ },
+ {
+  "dc": 6510,
+  "name": "Sinusitis, pansinusitis, chronic.",
+  "group": "none"
+ },
+ {
+  "dc": 6511,
+  "name": "Sinusitis, ethmoid, chronic.",
+  "group": "none"
+ },
+ {
+  "dc": 6512,
+  "name": "Sinusitis, frontal, chronic.",
+  "group": "none"
+ },
+ {
+  "dc": 6513,
+  "name": "Sinusitis, maxillary, chronic.",
+  "group": "none"
+ },
+ {
+  "dc": 6514,
+  "name": "Sinusitis, sphenoid, chronic.",
+  "group": "none"
+ },
+ {
+  "dc": 6722,
+  "name": "Inactive, moderately advanced.",
+  "group": "none"
+ },
+ {
+  "dc": 6723,
+  "name": "Inactive, minimal.",
+  "group": "none"
+ },
+ {
+  "dc": 6820,
+  "name": "Neoplasms, benign.",
+  "group": "none"
+ },
+ {
+  "dc": 6822,
+  "name": "Actinomycosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6823,
+  "name": "Nocardiosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6824,
+  "name": "Chronic lung abscess.",
+  "group": "none"
+ },
+ {
+  "dc": 6825,
+  "name": "Fibrosis of lung, diffuse interstitial.",
+  "group": "none"
+ },
+ {
+  "dc": 6826,
+  "name": "Desquamative interstitial pneumonitis.",
+  "group": "none"
+ },
+ {
+  "dc": 6827,
+  "name": "Pulmonary alveolar proteinosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6828,
+  "name": "Eosinophilic granuloma.",
+  "group": "none"
+ },
+ {
+  "dc": 6829,
+  "name": "Drug-induced, pneumonitis & fibrosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6830,
+  "name": "Radiation-induced, pneumonitis & fibrosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6831,
+  "name": "Hypersensitivity pneumonitis.",
+  "group": "none"
+ },
+ {
+  "dc": 6832,
+  "name": "Pneumoconiosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6833,
+  "name": "Asbestosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6834,
+  "name": "Histoplasmosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6835,
+  "name": "Coccidioidomycosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6836,
+  "name": "Blastomycosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6837,
+  "name": "Cryptococcosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6838,
+  "name": "Aspergillosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6839,
+  "name": "Mucormycosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6840,
+  "name": "Diaphragm paralysis or paresis.",
+  "group": "none"
+ },
+ {
+  "dc": 6841,
+  "name": "Spinal cord injury with respiratory insufficiency.",
+  "group": "none"
+ },
+ {
+  "dc": 6842,
+  "name": "Kyphoscoliosis, pectus excavatum/carinatum.",
+  "group": "none"
+ },
+ {
+  "dc": 6843,
+  "name": "Traumatic chest wall defect.",
+  "group": "none"
+ },
+ {
+  "dc": 6844,
+  "name": "Post-surgical residual.",
+  "group": "none"
+ },
+ {
+  "dc": 6845,
+  "name": "Pleural effusion or fibrosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6846,
+  "name": "Sarcoidosis.",
+  "group": "none"
+ },
+ {
+  "dc": 6847,
+  "name": "Sleep Apnea Syndromes.",
+  "group": "none"
+ },
+ {
+  "dc": 8510,
+  "name": "Upper radicular group, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8511,
+  "name": "Middle radicular group, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8512,
+  "name": "Lower radicular group, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8513,
+  "name": "All radicular groups, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8514,
+  "name": "Musculospiral nerve (radial), paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8515,
+  "name": "Median nerve, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8516,
+  "name": "Ulnar nerve, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8517,
+  "name": "Musculocutaneous nerve, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8518,
+  "name": "Circumflex nerve, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8519,
+  "name": "Long thoracic nerve, paralysis.",
+  "group": "upper"
+ },
+ {
+  "dc": 8520,
+  "name": "Sciatic nerve, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8521,
+  "name": "External popliteal nerve (common peroneal), paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8522,
+  "name": "Musculocutaneous nerve (superficial peroneal), paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8523,
+  "name": "Anterior tibial nerve (deep peroneal), paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8524,
+  "name": "Internal popliteal nerve (tibial), paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8525,
+  "name": "Posterior tibial nerve, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8526,
+  "name": "Anterior crural nerve (femoral), paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8527,
+  "name": "Internal saphenous nerve, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8528,
+  "name": "Obturator nerve, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8529,
+  "name": "External cutaneous nerve of thigh, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8530,
+  "name": "Ilio-inguinal nerve, paralysis.",
+  "group": "lower"
+ },
+ {
+  "dc": 8610,
+  "name": "Neuritis, upper radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8611,
+  "name": "Neuritis, middle radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8612,
+  "name": "Neuritis, lower radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8613,
+  "name": "Neuritis, all radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8614,
+  "name": "Neuritis, musculospiral (radial) nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8615,
+  "name": "Neuritis, median nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8616,
+  "name": "Neuritis, ulnar nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8617,
+  "name": "Neuritis, musculocutaneous nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8618,
+  "name": "Neuritis, circumflex nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8619,
+  "name": "Neuritis, long thoracic nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8620,
+  "name": "Neuritis, sciatic nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8621,
+  "name": "Neuritis, external popliteal (common peroneal) nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8622,
+  "name": "Neuritis, musculocutaneous (superficial peroneal) nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8623,
+  "name": "Neuritis, anterior tibial (deep peroneal) nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8624,
+  "name": "Neuritis, internal popliteal (tibial) nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8625,
+  "name": "Neuritis, posterior tibial nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8626,
+  "name": "Neuritis, anterior crural (femoral) nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8627,
+  "name": "Neuritis, internal saphenous nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8628,
+  "name": "Neuritis, obturator nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8629,
+  "name": "Neuritis, external cutaneous nerve of thigh.",
+  "group": "lower"
+ },
+ {
+  "dc": 8630,
+  "name": "Neuritis, ilio-inguinal nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8710,
+  "name": "Neuralgia, upper radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8711,
+  "name": "Neuralgia, middle radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8712,
+  "name": "Neuralgia, lower radicular group.",
+  "group": "upper"
+ },
+ {
+  "dc": 8713,
+  "name": "Neuralgia, all radicular groups.",
+  "group": "upper"
+ },
+ {
+  "dc": 8714,
+  "name": "Neuralgia, musculospiral nerve (radial).",
+  "group": "upper"
+ },
+ {
+  "dc": 8715,
+  "name": "Neuralgia, median nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8716,
+  "name": "Neuralgia, ulnar nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8717,
+  "name": "Neuralgia, musculocutaneous nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8718,
+  "name": "Neuralgia, circumflex nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8719,
+  "name": "Neuralgia, long thoracic nerve.",
+  "group": "upper"
+ },
+ {
+  "dc": 8720,
+  "name": "Neuralgia, sciatic nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8721,
+  "name": "Neuralgia, external popliteal nerve (common peroneal).",
+  "group": "lower"
+ },
+ {
+  "dc": 8722,
+  "name": "Neuralgia, musculocutaneous nerve (superficial peroneal).",
+  "group": "lower"
+ },
+ {
+  "dc": 8723,
+  "name": "Neuralgia, anterior tibial nerve (deep peroneal).",
+  "group": "lower"
+ },
+ {
+  "dc": 8724,
+  "name": "Neuralgia, internal popliteal nerve (tibial).",
+  "group": "lower"
+ },
+ {
+  "dc": 8725,
+  "name": "Neuralgia, posterior tibial nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8726,
+  "name": "Neuralgia, anterior crural nerve (femoral).",
+  "group": "lower"
+ },
+ {
+  "dc": 8727,
+  "name": "Neuralgia, internal saphenous nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8728,
+  "name": "Neuralgia, obturator nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 8729,
+  "name": "Neuralgia, external cutaneous nerve of thigh.",
+  "group": "lower"
+ },
+ {
+  "dc": 8730,
+  "name": "Neuralgia, ilio-inguinal nerve.",
+  "group": "lower"
+ },
+ {
+  "dc": 9404,
+  "name": "Obsessive compulsive disorder.",
+  "group": "none"
+ }
+]
