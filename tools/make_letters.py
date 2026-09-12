@@ -171,6 +171,62 @@ COMBINED EVALUATION FOR COMPENSATION: 70%
 """
 
 
+# The two letters below use REAL condition names from the rating schedule in
+# 38 CFR Part 4 (DC 8515 median nerve, DC 8514 musculospiral/radial nerve).
+# The deterministic lexicon abstains on both, so these are the letters where
+# the semantic classifier is genuinely load-bearing rather than decorative.
+
+LETTERS["07_nerve_terminology"] = f"""{BANNER}
+DEPARTMENT OF VETERANS AFFAIRS
+Regional Office
+
+Name: D. SYNTHETIC
+File Number: 00-000-007
+Date of Notification: August 19, 2026
+
+DECISION
+
+Service connection for post-traumatic stress disorder is granted with an
+evaluation of 60 percent effective May 4, 2026.
+
+Service connection for incomplete paralysis of the left median nerve is
+granted with an evaluation of 20 percent effective May 4, 2026.
+
+Service connection for neuritis of the right musculospiral nerve is granted
+with an evaluation of 10 percent effective May 4, 2026.
+
+Service connection for tinnitus is granted with an evaluation of 10 percent
+effective May 4, 2026.
+
+Your combined evaluation for compensation is 70 percent.
+"""
+
+LETTERS["08_nerve_no_side"] = f"""{BANNER}
+DEPARTMENT OF VETERANS AFFAIRS
+Regional Office
+
+Name: P. SYNTHETIC
+File Number: 00-000-008
+Date of Notification: September 2, 2026
+
+DECISION
+
+Service connection for post-traumatic stress disorder is granted with an
+evaluation of 60 percent effective June 1, 2026.
+
+Service connection for incomplete paralysis of the median nerve is granted
+with an evaluation of 20 percent effective June 1, 2026.
+
+Service connection for neuritis of the musculospiral nerve is granted with
+an evaluation of 10 percent effective June 1, 2026.
+
+Service connection for tinnitus is granted with an evaluation of 10 percent
+effective June 1, 2026.
+
+Your combined evaluation for compensation is 70 percent.
+"""
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     for name, body in LETTERS.items():

@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Laterality = Literal["left", "right", "bilateral", "unknown", "not_applicable"]
-ExtremityGroup = Literal["upper", "lower", "none"]
+# "none" means recognised as a non-extremity condition. "unrecognised"
+# means the lexicon has no opinion - a genuinely different state, and the
+# only one that justifies a model call.
+ExtremityGroup = Literal["upper", "lower", "none", "unrecognised"]
 
 # 4.26(a): "arms" and "legs" mean the upper and lower extremities AS A WHOLE,
 # so a wrist and a forearm belong to the same extremity group.
@@ -123,11 +126,11 @@ def _classify_extremity(condition: str) -> ExtremityGroup:
         return "upper"
     if words & LOWER_TERMS:
         return "lower"
-    return "none"
+    return "unrecognised"
 
 
 def _classify_laterality(condition: str, group: ExtremityGroup) -> Laterality:
-    if group == "none":
+    if group in ("none", "unrecognised"):
         return "not_applicable"
     low = condition.lower()
     if re.search(r"\bbilateral\b", low):
@@ -225,7 +228,7 @@ def parse(text: str) -> Extraction:
             break
 
     for rating in result.ratings:
-        if rating.extremity_group != "none" and rating.laterality == "unknown":
+        if rating.extremity_group in ("upper", "lower") and rating.laterality == "unknown":
             result.ambiguities.append(
                 f"'{rating.condition}' is a {rating.extremity_group} extremity condition but the "
                 f"letter does not state left or right; 4.26 eligibility cannot be determined."
@@ -244,7 +247,7 @@ def candidate_bilateral_pairs(ratings: list[ExtractedRating]) -> list[tuple[int,
     for i, a in enumerate(ratings):
         for j in range(i + 1, len(ratings)):
             b = ratings[j]
-            if a.extremity_group == "none" or a.extremity_group != b.extremity_group:
+            if a.extremity_group not in ("upper", "lower") or a.extremity_group != b.extremity_group:
                 continue
             if {a.laterality, b.laterality} != {"left", "right"}:
                 continue

@@ -1,29 +1,41 @@
-"""AI JUSTIFICATION GATE - the evidence that the model earns its place.
+"""AI JUSTIFICATION GATE - evidence for where the model is and is not used.
 
 Recheck refuses to use a language model anywhere deterministic code is
-adequate. These tests are the standing proof of where that line actually
-falls, and they are regression-protected so the claim cannot silently rot.
+adequate. These tests are the standing, regression-protected proof of where
+that line falls.
 
-Two findings, both measured rather than asserted:
+WHAT IS CLAIMED, PRECISELY:
 
-1. EXTRACTION OF RATINGS IS DETERMINISTIC. The parser handles all six
-   heterogeneous fixture letters - tabular, prose, historical-percentage
-   traps, cross-body-part pairs, missing laterality and a no-discrepancy
-   control. No model is used or needed. (This alone is circular evidence,
-   since the fixtures and the parser were written together; it establishes
-   sufficiency for the supported scope, not generality.)
+1. Extraction of percentages and combined values is deterministic.
+   The parser handles all six heterogeneous fixture letters - tabular, prose,
+   a historical-percentage trap, a cross-body-part pair, missing laterality,
+   and a no-discrepancy control. No model is used.
+   This evidence is CIRCULAR by construction: the fixtures and the parser
+   were written together. It establishes sufficiency for the supported input
+   scope. It says nothing about letters we have not seen.
 
-2. ANATOMICAL CLASSIFICATION IS NOT DETERMINISTIC AT SCALE. Measured
-   NON-CIRCULARLY against 138 real VA condition names taken from the rating
-   schedule in 38 CFR Part 4 and labeled by diagnostic-code range - an
-   external oracle this project does not control - the hand-built lexicon
-   classifies under 60% correctly, and every error is a MISS rather than a
-   false positive.
+2. The CURRENT LEXICAL BASELINE has low coverage of real VA terminology.
+   Measured non-circularly against 138 real condition names from the rating
+   schedule in 38 CFR Part 4, labeled by diagnostic-code range - an oracle
+   this project does not control - the 29-term lexicon commits to a group
+   for 22 names and abstains on 116. It asserts a wrong group zero times.
 
-Finding 2 is why a model exists in this product, and it is confined to
-exactly that job: deciding which extremity group a condition belongs to.
-Percentages are parsed deterministically, the arithmetic is deterministic,
-and genuine ambiguity goes to a human rather than to the model.
+WHAT IS NOT CLAIMED:
+   That no deterministic approach could solve this. A large curated
+   anatomical ontology, or a mapping onto an external terminology such as
+   SNOMED CT, might well achieve high coverage. That is a different system
+   with an external dependency and a maintenance burden, and it is not what
+   this project has. The honest statement is narrow: THIS lexical baseline
+   does not scale to the terminology tested, which is why a semantic
+   classifier is used for the residue.
+
+The measured properties that make the split safe:
+   - the deterministic layer never asserts a wrong group, so its positives
+     can be trusted without a model call
+   - the model's role is confined to extremity group and laterality
+   - the model can express neither a percentage nor a combined rating,
+     because those fields do not exist in its schema
+   - genuine ambiguity goes to a human, never to the model
 """
 
 import json
@@ -36,16 +48,23 @@ from recheck.extract.deterministic import LEXICON_SIZE, _classify_extremity
 FIXTURES = pathlib.Path(__file__).parent.parent / "fixtures"
 CONDITIONS = json.loads((FIXTURES / "va_condition_names.json").read_text())
 
-# The measured baseline at the time this gate was established. If a future
-# change to the lexicon moves this materially, the justification narrative in
-# the README must be re-derived rather than quietly left stale.
-BASELINE_ACCURACY = 0.493
-TOLERANCE = 0.06
+# The value the lexicon returns when it has no opinion. Distinct from "none",
+# which is a positive finding that a condition is not an extremity disability.
+ABSTAIN = "unrecognised"
+
+# Measured baseline at the time the gate was established.
+BASELINE_COVERAGE = 22 / 138
+TOLERANCE = 0.08
 
 
-def _accuracy() -> float:
+def _coverage() -> float:
+    """Fraction of real condition names the lexicon classifies CORRECTLY."""
     correct = sum(1 for c in CONDITIONS if _classify_extremity(c["name"]) == c["group"])
     return correct / len(CONDITIONS)
+
+
+def _abstentions() -> int:
+    return sum(1 for c in CONDITIONS if _classify_extremity(c["name"]) == ABSTAIN)
 
 
 def test_dataset_is_real_and_externally_labeled():
@@ -53,36 +72,59 @@ def test_dataset_is_real_and_externally_labeled():
     assert {c["group"] for c in CONDITIONS} == {"upper", "lower", "none"}
 
 
-def test_deterministic_lexicon_is_measurably_insufficient():
-    """The core justification: a lexicon does not scale to real VA vocabulary."""
-    accuracy = _accuracy()
-    assert accuracy < 0.60, (
-        f"lexicon now classifies {accuracy:.1%} of real condition names. If it has "
-        f"genuinely become sufficient, the model should be removed from the product, "
-        f"not kept for appearances."
+def test_lexical_baseline_has_low_coverage_of_real_terminology():
+    """The narrow, precise justification for a semantic classifier.
+
+    If a future change makes the deterministic layer genuinely sufficient,
+    this test must fail loudly - because the correct response would be to
+    REMOVE the model, not to keep it for appearances.
+    """
+    coverage = _coverage()
+    assert coverage < 0.35, (
+        f"the lexicon now classifies {coverage:.1%} of real condition names correctly. "
+        f"If it has become sufficient, remove the model from the product rather than "
+        f"keeping it, and rewrite this gate."
     )
-    assert abs(accuracy - BASELINE_ACCURACY) < TOLERANCE
+    assert abs(coverage - BASELINE_COVERAGE) < TOLERANCE
+
+
+def test_most_real_terminology_is_outside_the_lexicon():
+    """Abstention, not error, is the dominant outcome."""
+    assert _abstentions() > 0.7 * len(CONDITIONS)
+
+
+def test_lexicon_never_asserts_a_wrong_group():
+    """The safety property that lets the deterministic layer be a fast path.
+
+    When the lexicon commits to "upper" or "lower", that answer feeds 4.26
+    pairing without a model call. That is only sound because it is never
+    wrong - it abstains instead. A single false positive here would mean
+    4.26 could be applied to the wrong pair of conditions silently.
+    """
+    wrong = [
+        {"name": c["name"], "truth": c["group"], "said": _classify_extremity(c["name"])}
+        for c in CONDITIONS
+        if _classify_extremity(c["name"]) not in (c["group"], ABSTAIN)
+    ]
+    assert wrong == [], f"lexicon asserted a wrong group for: {wrong[:5]}"
+
+
+def test_abstention_is_distinct_from_a_positive_none():
+    """"I know this is not an extremity" and "I do not know this word" must
+    not be the same value.
+
+    Conflating them caused two real problems: the gate over-reported coverage
+    as 49.3% by counting abstentions as correct "none" answers, and the
+    classifier spent model calls on conditions the lexicon already knew.
+    """
+    assert _classify_extremity("tinnitus") == "none"
+    assert _classify_extremity("Genu recurvatum") == ABSTAIN
+    assert _classify_extremity("right knee, limitation of flexion") == "lower"
 
 
 def test_the_lexicon_is_small_relative_to_the_problem():
-    """29 terms against a rating schedule of several hundred conditions."""
     assert LEXICON_SIZE < 40
     assert len(CONDITIONS) > 4 * LEXICON_SIZE
-
-
-def test_errors_are_misses_not_false_positives():
-    """Safety property: the lexicon never confidently asserts a WRONG group.
-
-    This is what makes the deterministic layer safe to keep as a fast path -
-    when it is wrong it says "none", which routes to the model or to a human,
-    rather than silently applying 4.26 to the wrong pair of conditions.
-    """
-    false_positives = [
-        c
-        for c in CONDITIONS
-        if _classify_extremity(c["name"]) not in (c["group"], "none")
-    ]
-    assert false_positives == [], f"lexicon asserted a wrong group for: {false_positives[:5]}"
 
 
 @pytest.mark.parametrize(
@@ -98,13 +140,11 @@ def test_errors_are_misses_not_false_positives():
         ("External popliteal nerve (common peroneal), paralysis", "lower"),
     ],
 )
-def test_representative_terms_the_lexicon_cannot_reach(name, group):
-    """Named examples for the README and the demo.
+def test_representative_terms_the_lexicon_abstains_on(name, group):
+    """Real rating-schedule entries requiring anatomical or Latin knowledge.
 
-    These are real entries from the VA rating schedule. Each requires
-    anatomical or Latin knowledge that generalises semantically but not
-    lexically - which is precisely a language model's job and precisely not
-    a regex's.
+    Each generalises semantically but not lexically. These are the named
+    examples used in the README and the demo, so they are pinned here.
     """
-    assert _classify_extremity(name) == "none"
+    assert _classify_extremity(name) == ABSTAIN
     assert group in ("upper", "lower")
