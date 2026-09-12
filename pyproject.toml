@@ -19,6 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+# Live providers are OPTIONAL. The canonical verification path (--scripted)
+# needs none of them, and the core product does not depend on provider
+# availability.
+anthropic = ["strands-agents[anthropic]==1.55.1"]
+ollama = ["strands-agents[ollama]==1.55.1"]
 
 [project.scripts]
 recheck = "recheck.cli:main"
