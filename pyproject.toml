@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recheck"
+version = "0.1.0"
+description = "Deterministic verification of VA combined disability ratings, with a narrow AI boundary and human-in-the-loop clarification"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "strands-agents==1.55.1",
+  "strands-agents-tools==0.8.8",
+  "pydantic>=2.11",
+  "pypdf>=6.0",
+  "fpdf2>=2.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+
+[project.scripts]
+recheck = "recheck.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]

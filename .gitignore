@@ -13,3 +13,7 @@ spikes/gstate.json
 letter.pdf
 out/
 runs/
+*.egg-info/
+src/*.egg-info/
+build/
+dist/
