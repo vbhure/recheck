@@ -36,6 +36,7 @@ from recheck.graph import (
     DocumentTooLarge,
     ScannedDocument,
     accepted_answers,
+    asked,
     build_graph,
     open_case,
 )
@@ -306,7 +307,8 @@ def question_text(store: CaseStore, case_id: str, store_flag: str, *, exiting: b
                      f"unknown. The letter states {case.stated_combined}%.")
     lines.append("")
     placeholder = []
-    for i in m.unknown:
+    questions = asked(decisions)
+    for i in questions:
         d = decisions[i]
         where = f", letter {d.evidence}" if d.evidence else ""
         lines.append(f"  [{i}] {d.condition}  ({d.percent}%{where})")
@@ -318,7 +320,7 @@ def question_text(store: CaseStore, case_id: str, store_flag: str, *, exiting: b
         if known:
             lines.append(f"      established: {'; '.join(known)}")
         lines.append(f"      not established: {' and '.join(d.missing)} - {d.note or 'not stated in the letter'}")
-        if len(m.unknown) == 1:
+        if len(questions) == 1:
             for answer, degrees in m.outcomes_for(i).items():
                 shown = "/".join(part for part in answer if part not in ("unknown",))
                 lines.append(f"        if {shown or 'unknown'}: {_or(degrees)}")

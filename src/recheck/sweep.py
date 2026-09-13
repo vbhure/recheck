@@ -262,7 +262,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
     once raised out of here and the sweep printed no triage at all, for any
     document.
     """
-    from recheck.graph import accepted_answers
+    from recheck.graph import accepted_answers, asked
 
     agree, discrepant, awaiting, undetermined, failed = [], [], [], [], []
     groups = {"DETERMINISTIC": 0, "AI": 0, "HUMAN": 0, "unknown": 0}
@@ -282,7 +282,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
             sides = sum(1 for d in decisions if d.side_by is Actor.DETERMINISTIC)
             if outcome.state == Outcome.AWAITING_HUMAN:
                 bucket = awaiting
-                unknown = [(i, d) for i, d in enumerate(decisions) if d.missing]
+                unknown = [(i, decisions[i]) for i in asked(decisions)]
                 placeholder = ",".join(f"{i}=<{'|'.join(accepted_answers(d))}>" for i, d in unknown)
                 lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}; "
                          f"letter states {case.stated_combined}%"]

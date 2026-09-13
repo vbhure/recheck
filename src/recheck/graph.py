@@ -53,6 +53,7 @@ from strands.multiagent.base import MultiAgentBase, MultiAgentResult, Status
 from strands.session.file_session_manager import FileSessionManager
 
 from recheck.case import Case, CaseStore
+from recheck.cfr.rating import COMPENSABLE_MINIMUM
 from recheck.classify import AgentFactory, Decision, classify_async
 from recheck.extract import pdf_text
 from recheck.extract.deterministic import ExtractedRating, parse
@@ -385,12 +386,13 @@ class AssessNode(MultiAgentBase):
         if m.answers_matter and (not after_answers or refined):
             case.status = "awaiting_human"
             case.possible_degrees = list(m.possible)
+            questions = [(i, decisions[i]) for i in asked(decisions)]
             trace.add(
                 Actor.DETERMINISTIC,
                 "Question for a reviewer",
-                "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)} not established" for i, d in unknown)
+                "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)} not established" for i, d in questions)
                 + f". The answers lead to different ratings: {_or(m.possible)}.",
-                value=f"{len(unknown)} fact(s) needed",
+                value=f"{len(questions)} fact(s) needed",
             )
             case.store_trace(trace)
             self.store.save(case)
@@ -420,9 +422,10 @@ class AssessNode(MultiAgentBase):
 
     def _interrupt(self, case: Case, decisions: list[Decision], m: Materiality) -> MultiAgentResult:
         conditions = []
-        for i in m.unknown:
+        questions = asked(decisions)
+        for i in questions:
             d = decisions[i]
-            outcomes = m.outcomes_for(i) if len(m.unknown) == 1 else {}
+            outcomes = m.outcomes_for(i) if len(questions) == 1 else {}
             conditions.append({
                 "index": i,
                 "condition": d.condition,
@@ -570,6 +573,18 @@ def _record_unenumerated(store: CaseStore, case: Case, trace: Trace, m: Material
 # Human answers
 # ---------------------------------------------------------------------------
 
+def asked(decisions: Sequence[Decision]) -> list[int]:
+    """The conditions a reviewer is asked about: those with a fact missing that could matter.
+
+    A non-compensable (0%) evaluation is never part of the bilateral factor
+    (38 CFR 4.26(c)), so no answer about it can change a rating. It used to
+    be listed in the question and required in every answer: "1=left,2=right"
+    for the two knees was refused because the 0% scar had no answer. It may
+    still be answered; it is never required.
+    """
+    return [i for i, d in enumerate(decisions) if d.missing and d.percent >= COMPENSABLE_MINIMUM]
+
+
 def accepted_answers(decision: Decision) -> list[str]:
     """The answers a reviewer may give for one condition - facts, never numbers."""
     if decision.group_missing and decision.side_missing:
@@ -667,7 +682,7 @@ def parse_answers(
             continue
         answers[index] = _interpret(raw_value, decision)
 
-    outstanding = [i for i, d in enumerate(decisions) if d.missing and i not in answers]
+    outstanding = [i for i in asked(decisions) if i not in answers]
     if outstanding and not problems:
         problems.append(f"no answer supplied for condition(s) {outstanding}")
     return answers, problems

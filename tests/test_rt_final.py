@@ -17,6 +17,9 @@ Each test fails on the code before its fix (commit 65b8d0c).
          names ("Final degree: 90%") printed at exit 0.
   RG-09  A triage row cut the UNDETERMINED reason mid-word.
   RG-10  The PDF child: Ctrl+C was held for the whole budget.
+  RG-11  A 0% condition with an unknown side - which 4.26(c) keeps out of
+         the bilateral factor - was asked about, and an answer that left it
+         out was refused.
   RG-12  preflight did not say that audit and sweep use the provider only
          with --model.
   RG-13  "DCs 5260-5261" and "DC 5260, 5261" were not read as code references.
@@ -305,3 +308,37 @@ def test_a_ready_preflight_says_audit_uses_the_provider_only_with_model(tmp_path
     code, out, _ = main("preflight", store=tmp_path / "runs")
     assert code == EXIT_OK
     assert "only when run with --model anthropic" in out
+
+
+# ==========================================================================
+# RG-11: a 0% condition with an unknown fact is never required
+# ==========================================================================
+
+ZERO_UNKNOWN = [("Bronchial asthma", 60), ("Degenerative arthritis of the knee", 20),
+                ("Limitation of motion of the knee", 10), ("Scar of the ankle", 0), ("Tinnitus", 10)]
+
+
+def test_a_non_compensable_unknown_is_not_asked_and_not_required(tmp_path):
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "docs" / "zero.txt", ZERO_UNKNOWN, stated=70)
+    code, out, err = main("audit", letter, "--case", "zero", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    assert "[1]" in out and "[2]" in out and "Scar of the ankle" not in out.split("QUESTION FOR THE REVIEWER")[1]
+    assert '--answer "1=<left|right|both|unknown>,2=<left|right|both|unknown>"' in out
+
+    code, out, err = main("sweep", tmp_path / "docs", store=store)
+    assert code == EXIT_AWAITING_HUMAN and "Scar of the ankle" not in out, out
+
+    code, out, err = main("resume", "--case", "zero", "--answer", "1=left,2=right", store=store)
+    assert code == EXIT_OK, out + err
+    assert re.search(rf"{FINAL}: 80%", out)
+    trace = CaseStore(store).load("zero").trace
+    assert any(e["action"] == "Unknown facts cannot change the result" for e in trace)
+
+
+def test_a_non_compensable_unknown_may_still_be_answered(tmp_path):
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "zero.txt", ZERO_UNKNOWN, stated=70)
+    assert main("audit", letter, "--case", "zero", store=store)[0] == EXIT_AWAITING_HUMAN
+    code, out, err = main("resume", "--case", "zero", "--answer", "1=left,2=right,3=left", store=store)
+    assert code == EXIT_OK, out + err
