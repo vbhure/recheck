@@ -203,6 +203,29 @@ class CaseBusy(Exception):
     """Another process is working on this case right now."""
 
 
+@dataclass(frozen=True)
+class CaseSnapshot:
+    """case.json bytes (None if absent) and the session tree (None if absent) of one case."""
+
+    case_id: str
+    case_json: bytes | None
+    session: tuple[tuple[str, ...], dict[str, bytes]] | None
+
+
+def _read_tree(root: pathlib.Path) -> tuple[tuple[str, ...], dict[str, bytes]] | None:
+    """(sub-directories, {file: bytes}) under root, as POSIX relative paths; None if root is absent."""
+    if not root.is_dir():
+        return None
+    directories, files = [], {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            directories.append(relative)
+        else:
+            files[relative] = path.read_bytes()
+    return tuple(directories), files
+
+
 class CaseStore:
     """Filesystem-backed case storage. One directory per case."""
 
@@ -247,9 +270,20 @@ class CaseStore:
         try:
             yield
         finally:
-            _release(fd)
-            with contextlib.suppress(OSError):
-                path.unlink()
+            if _UNLINK_WHILE_LOCKED:
+                # POSIX: remove the file while still holding the lock, then
+                # close. Released first, a second process could lock the old
+                # file and pass its inode re-check before the removal, and a
+                # third could then create and lock a new file - two holders.
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                _release(fd)
+            else:
+                # Windows cannot remove a file another handle has open, so a
+                # waiting process never holds an orphan; close first.
+                _release(fd)
+                with contextlib.suppress(OSError):
+                    path.unlink()
 
     def discard(self, case_id: str) -> None:
         """Remove a case entirely - domain state and Strands session - to re-audit it.
@@ -269,6 +303,63 @@ class CaseStore:
         os.replace(directory, trash)
         _remove_tree(trash)
 
+    def snapshot(self, case_id: str) -> "CaseSnapshot":
+        """Everything a run can change on disk for this case: case.json and its Strands session.
+
+        A resume that raised part-way - a locked or read-only case.json, a full
+        disk, Ctrl+C - left the session with the interrupt already consumed
+        and no node waiting on it, so the reviewer's question could never be
+        answered again without discarding the case. Taken before the run and
+        restored if it raises (CaseStore.restore), the question stays open.
+        Held in memory: the session is a few small JSON files, and a snapshot
+        on disk would lengthen paths that are already near Windows' limit and
+        outlive a killed process.
+        """
+        session = self.session_dir(case_id)
+        path = self.path_for(case_id)
+        return CaseSnapshot(case_id, path.read_bytes() if path.exists() else None, _read_tree(session))
+
+    def restore(self, snapshot: "CaseSnapshot") -> None:
+        """Put back what snapshot() recorded, touching only what differs.
+
+        case.json is rewritten only if its bytes changed: a read-only file the
+        run failed to replace is left as it is. The session directory, if it
+        changed, is moved aside in one step and rebuilt from the snapshot.
+        """
+        session = self.session_dir(snapshot.case_id)
+        if _read_tree(session) != snapshot.session:
+            # No longer than "session": Strands' deepest file sits close to
+            # the Windows path limit, and the aside copy must still be removable.
+            aside = session.with_name(f".r{uuid.uuid4().hex[:5]}")
+            if session.exists():
+                os.replace(session, aside)
+            if snapshot.session is not None:
+                directories, files = snapshot.session
+                session.mkdir(parents=True, exist_ok=True)
+                for relative in directories:
+                    (session / relative).mkdir(parents=True, exist_ok=True)
+                for relative, data in files.items():
+                    (session / relative).parent.mkdir(parents=True, exist_ok=True)
+                    (session / relative).write_bytes(data)
+            if aside.exists():
+                _remove_tree(aside)
+        path = self.path_for(snapshot.case_id)
+        current = path.read_bytes() if path.exists() else None
+        if current == snapshot.case_json:
+            return
+        if snapshot.case_json is None:
+            path.unlink()
+            return
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".case.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(snapshot.case_json)
+            _replace_with_retry(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
     def save(self, case: Case) -> pathlib.Path:
         path = self.path_for(case.case_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -286,7 +377,28 @@ class CaseStore:
             raise
         return path
 
+    def _same_directory(self, recorded: object, requested: str) -> bool:
+        """Does the id the file names reach the directory it was read from?
+
+        On a case-insensitive filesystem (Windows, macOS) "PAIR" and "pair"
+        are one directory. Compared exactly, a case audited as PAIR could not
+        be loaded as pair: `show --case pair` was refused, and a sweep that
+        met PAIR.txt and pair.pdf treated the answered case as corrupt and
+        discarded it. An id that differs only in letter case is accepted when
+        it names the very same directory - so a write by the id on file lands
+        where the case was read - and refused anywhere it would not, which is
+        the redirect the exact check exists to stop.
+        """
+        if not isinstance(recorded, str) or recorded.casefold() != requested.casefold():
+            return False
+        try:
+            return os.path.samefile(self.dir_for(recorded), self.dir_for(requested))
+        except (OSError, ValueError):
+            return False
+
     def load(self, case_id: str) -> Case:
+        """Read and validate a case. The Case carries the id as the file records it,
+        which differs from `case_id` only in letter case (see _same_directory)."""
         path = self.path_for(case_id)
         if not path.exists():
             raise FileNotFoundError(f"no such case: {case_id} (looked in {path})")
@@ -312,7 +424,7 @@ class CaseStore:
         # file names, so a case.json edited to name another case wrote into
         # that case and destroyed its result. The file must name the case it
         # was read for.
-        if raw.get("case_id") != case_id:
+        if raw.get("case_id") != case_id and not self._same_directory(raw.get("case_id"), case_id):
             raise CaseCorrupt(f"case {case_id} names a different case id {raw.get('case_id')!r}")
         _check_shape(case_id, raw)
         try:
@@ -363,14 +475,24 @@ def _check_result(case_id: str, case: Case, decisions: list[Decision]) -> None:
     the letter can catch.
     """
     figures = (case.recomputed_combined, case.recomputed_degree, case.alternative_degree)
+    computed = [e for e in case.trace if _is_result_entry(e)]
     if case.status != "complete":
         if any(v is not None for v in figures) or case.bilateral_applied:
             raise CaseCorrupt(f"case {case_id} carries a recomputed result but its status is {case.status!r}")
+        if computed:
+            raise CaseCorrupt(f"case {case_id} has arithmetic in its trace but its status is {case.status!r}")
         return
-    derived = _derive(decisions)
+    try:
+        derived = _derive(decisions)
+    except ValueError as exc:
+        # The engine refuses facts it is not verified for (more bilateral
+        # disabilities than its 4.26(d) search covers). Raised from here, it
+        # was not CaseCorrupt, and a sweep that met such a file stopped
+        # without a triage for any document.
+        raise CaseCorrupt(f"case {case_id} has facts the 38 CFR engine refuses: {exc}") from exc
     if derived is None:
         raise CaseCorrupt(f"case {case_id} is marked complete, but unknown facts on file could change its result")
-    final, combined, applied, alternative, decided_by_426d = derived
+    final, combined, applied, alternative, decided_by_426d, steps, notes = derived
     recorded = (case.recomputed_degree, case.recomputed_combined, case.bilateral_applied, case.alternative_degree)
     if recorded != (final, combined, applied, alternative):
         raise CaseCorrupt(f"case {case_id} records a result that 38 CFR 4.25 and 4.26 do not give for its facts")
@@ -378,17 +500,82 @@ def _check_result(case_id: str, case: Case, decisions: list[Decision]) -> None:
     # be there exactly when 4.26(d) decides the result.
     if case.has_trace_action(RULE_426D_ACTION) != decided_by_426d:
         raise CaseCorrupt(f"case {case_id} has a trace that disagrees with its result about 38 CFR 4.26(d)")
+    # The full report prints the decision trace, figures included. An entry
+    # edited to "Final degree of disability: 90%" printed that line under the
+    # correct 80% verdict. Every figure the compute node wrote into the trace
+    # must be the one the engine gives for these facts.
+    if not _trace_agrees(computed, final, combined, steps, notes):
+        raise CaseCorrupt(f"case {case_id} has a decision trace whose arithmetic 38 CFR 4.25 and 4.26 do not give "
+                          f"for its facts")
+
+
+#: Trace actions the compute node records from the evaluation, and nothing else does.
+FINAL_DEGREE_ACTION = "Final degree of disability"
+RESULT_ACTIONS = (FINAL_DEGREE_ACTION, "Arithmetic", "Note")
+
+
+def _action_key(action: object) -> str:
+    """An action name with case, spacing and punctuation removed."""
+    return re.sub(r"[^0-9a-z]", "", action.casefold()) if isinstance(action, str) else ""
+
+
+_RESULT_KEYS = {_action_key(a) for a in RESULT_ACTIONS}
+
+
+def _is_result_entry(entry: dict[str, Any]) -> bool:
+    """Does this trace entry present itself as the compute node's arithmetic?
+
+    Matched loosely on purpose: the report prints "<action>: <value>", so an
+    entry named "Final degree of disability." or "FINAL DEGREE OF DISABILITY"
+    reads exactly like the real one, and must be checked like it.
+    """
+    return _action_key(entry.get("action")) in _RESULT_KEYS
+
+
+def _trace_agrees(computed: list[dict[str, Any]], final: int, combined: int,
+                  steps: tuple, notes: tuple) -> bool:
+    """The result entries of a complete case's trace, checked against the evaluation.
+
+    Every such entry must be spelled exactly as the compute node spells it
+    and be DETERMINISTIC. Arithmetic and Note entries must reproduce the
+    evaluation's steps and notes exactly and in order (none at all is
+    allowed: an absent entry prints no figure). Each final-degree entry must
+    name the final degree as its value, and its detail must start its numbers
+    with the combined value; the only other numbers it may carry are the 10
+    and 5 of the 4.25(a) rounding rule it states.
+    """
+    if any(e.get("action") not in RESULT_ACTIONS or e.get("actor") != Actor.DETERMINISTIC.value
+           for e in computed):
+        return False
+    arithmetic = tuple((e.get("detail"), e.get("value"), e.get("rule")) for e in computed
+                       if e.get("action") == "Arithmetic")
+    if arithmetic and arithmetic != steps:
+        return False
+    written_notes = tuple(e.get("detail") for e in computed if e.get("action") == "Note")
+    if written_notes and written_notes != notes:
+        return False
+    for entry in computed:
+        if entry.get("action") != FINAL_DEGREE_ACTION:
+            continue
+        if entry.get("value") != f"{final}%":
+            return False
+        numbers = re.findall(r"\d+", entry.get("detail") or "")
+        if numbers[:1] != [str(combined)] or any(n not in ("10", "5") for n in numbers[1:]):
+            return False
+    return True
 
 
 _DERIVED: dict[tuple[tuple[int, str, str], ...], tuple | None] = {}
 
 
 def _derive(decisions: list[Decision]) -> tuple | None:
-    """(final, combined, factor applied, alternative, 4.26(d) decides) for the facts on
-    file, or None if they do not settle a result.
+    """(final, combined, factor applied, alternative, 4.26(d) decides, steps, notes) for
+    the facts on file, or None if they do not settle a result.
 
-    Cached, because a sweep loads each case several times and only the
-    percentage, group and side of each condition enter the arithmetic.
+    Steps are (detail, running value, rule), as the compute node writes them
+    into the trace. Cached, because a sweep loads each case several times and
+    only the percentage, group and side of each condition enter the
+    arithmetic and its wording.
     """
     key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
     if key not in _DERIVED:
@@ -398,7 +585,9 @@ def _derive(decisions: list[Decision]) -> tuple | None:
         else:
             evaluation, _ = evaluate_for_report(decisions)
             result = (evaluation.final_degree, evaluation.combined_value, evaluation.bilateral_applied,
-                      evaluation.alternative_final_degree, bool(evaluation.excluded_under_426d))
+                      evaluation.alternative_final_degree, bool(evaluation.excluded_under_426d),
+                      tuple((s.detail, s.running_after, s.rule) for s in evaluation.steps),
+                      tuple(evaluation.notes))
         if len(_DERIVED) > 512:
             _DERIVED.clear()
         _DERIVED[key] = result
@@ -464,7 +653,9 @@ def _check_shape(case_id: str, raw: dict[str, Any]) -> None:
         if not isinstance(d["condition"], str):
             raise bad(f"decision [{index}] condition must be text")
         for name in ("group_by", "side_by"):
-            if d.get(name) is not None and d.get(name) not in _ACTORS:
+            # Type first: a list or object here raised "unhashable type" from
+            # the membership test, a traceback that stopped the whole sweep.
+            if d.get(name) is not None and not _is_actor(d.get(name)):
                 raise bad(f"decision [{index}] {name} {d.get(name)!r} is not an actor")
         for name in ("note", "evidence"):
             if not optional_str(d.get(name)):
@@ -472,7 +663,7 @@ def _check_shape(case_id: str, raw: dict[str, Any]) -> None:
     for index, e in enumerate(raw.get("trace", [])):
         if not isinstance(e, dict):
             raise bad(f"trace entry [{index}] must be an object")
-        if e.get("actor") not in _ACTORS:
+        if not _is_actor(e.get("actor")):
             raise bad(f"trace entry [{index}] has an unknown actor {e.get('actor')!r}")
         if not (isinstance(e.get("action"), str) and isinstance(e.get("detail"), str)):
             raise bad(f"trace entry [{index}] action and detail must be text")
@@ -487,6 +678,10 @@ def _check_shape(case_id: str, raw: dict[str, Any]) -> None:
     for index, step in enumerate(raw.get("timeline", [])):
         if not (isinstance(step, dict) and isinstance(step.get("node"), str) and type(step.get("pid")) is int):
             raise bad(f"timeline entry [{index}] must name a node and a process id")
+
+
+def _is_actor(value: Any) -> bool:
+    return isinstance(value, str) and value in _ACTORS
 
 
 def _is_percentage(value: Any) -> bool:
@@ -523,6 +718,10 @@ def _acquire(path: pathlib.Path, case_id: str) -> int:
                 continue
         return fd
     raise CaseBusy(busy)
+
+
+#: Whether lock() removes its file before closing it (see lock()).
+_UNLINK_WHILE_LOCKED = os.name != "nt"
 
 
 def _release(fd: int) -> None:

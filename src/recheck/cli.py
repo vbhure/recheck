@@ -37,17 +37,20 @@ from recheck.graph import (
     ScannedDocument,
     accepted_answers,
     build_graph,
-    interrupt_id,
     open_case,
-    outstanding_interrupt,
 )
 from recheck.report import render
-from recheck.sweep import Outcome, outcome_from_case, question_is_open, render_triage, sweep
+from recheck.sweep import Outcome, open_question, outcome_from_case, question_is_open, render_triage, sweep
 
 EXIT_OK = 0
 EXIT_AWAITING_HUMAN = 2
 EXIT_CANNOT_PROCEED = 3
 DEFAULT_STORE = "runs"
+
+
+#: Wording that joins two conditions in one name, for the MAP fixture below:
+#: a spaced dash, a slash, "&", "+", ";", "with" and "and".
+_JOINED_CONDITIONS = re.compile(r"\s[-–—]+\s|[/\\&+;]|\b(?:with|and)\b", re.I)
 
 
 def _scripted_factory(fixture: pathlib.Path | None):
@@ -98,9 +101,18 @@ def _scripted_factory(fixture: pathlib.Path | None):
                 # strips linked clauses for the same reason. A name whose
                 # rated condition lists terms of both groups is ambiguous and
                 # is not classified either.
+                #
+                # Nor is a name that joins two conditions (" - ", "/", "with",
+                # "and", ...): primary_clause strips only linked-condition
+                # wording, and "Left Lisfranc injury - cubital tunnel
+                # syndrome" was classified "upper" from the term after the
+                # dash. Which side of the join is the rated condition is not
+                # something a substring map can know, so a listed term on
+                # either side leaves the condition unclassified.
                 primary = primary_clause(name).lower()
                 groups = {group for key, group in anatomy.items() if key in primary}
-                match = groups.pop() if len(groups) == 1 else None
+                joined = _JOINED_CONDITIONS.search(primary) is not None
+                match = groups.pop() if len(groups) == 1 and not joined else None
                 out.append({
                     "condition": name,
                     "extremity_group": match or "none",
@@ -286,8 +298,12 @@ def question_text(store: CaseStore, case_id: str, store_flag: str, *, exiting: b
     # "does not establish facts that change this rating" read as "nothing
     # changes the rating", directly above a line saying it could be 70% or 80%.
     lines.append("The letter leaves out facts that could change this rating.")
-    lines.append(f"Depending on the answers it could be {_or(m.possible)}. "
-                 f"The letter states {case.stated_combined}%.")
+    if m.possible:
+        lines.append(f"Depending on the answers it could be {_or(m.possible)}. "
+                     f"The letter states {case.stated_combined}%.")
+    else:
+        lines.append(f"The ratings the answers could lead to could not be enumerated: too many facts are "
+                     f"unknown. The letter states {case.stated_combined}%.")
     lines.append("")
     placeholder = []
     for i in m.unknown:
@@ -323,6 +339,9 @@ def question_text(store: CaseStore, case_id: str, store_flag: str, *, exiting: b
 
 def _or(values) -> str:
     items = [f"{v}%" for v in values]
+    if not items:
+        # An empty set (an enumeration over its limit) raised IndexError here.
+        return "not established"
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
 
 
@@ -343,8 +362,11 @@ def cmd_resume(args) -> int:
     store = CaseStore(args.store)
     try:
         # Read once before locking so that a missing case is reported without
-        # creating anything in a store that may not exist.
-        store.load(args.case)
+        # creating anything in a store that may not exist. From here on the
+        # id is spelled as the case records it: on a case-insensitive
+        # filesystem `--case pair` reaches a case audited as PAIR, and its
+        # question is keyed by that spelling.
+        args.case = store.load(args.case).case_id
         with store.lock(args.case):
             return _resume_locked(args, store)
     except (FileNotFoundError, CaseCorrupt, CaseBusy) as exc:
@@ -383,21 +405,31 @@ def _resume_locked(args, store: CaseStore) -> int:
               f"({type(exc).__name__}). The case is corrupt; re-audit it with --fresh.", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
 
-    pending = outstanding_interrupt(graph)
-    if pending is None or pending.id != interrupt_id(args.case):
-        print(f"[recheck] case {args.case} says it is waiting on an answer, but its Strands session "
-              f"holds no open question (was {_shown_path(store.session_dir(args.case))} deleted?). "
-              f"Nothing to resume; re-audit it with --fresh.", file=sys.stderr)
+    pending = open_question(graph, args.case)
+    if pending is None:
+        print(f"[recheck] case {args.case} says it is waiting on an answer, but its Strands session in "
+              f"{_shown_path(store.session_dir(args.case))} holds no open question (it may have been deleted, "
+              f"or a run stopped part-way). Nothing to resume; re-audit it with --fresh.", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
 
+    try:
+        snapshot = store.snapshot(args.case)
+    except OSError as exc:
+        print(f"[recheck] could not read case {args.case} before resuming it ({type(exc).__name__}: {exc}). "
+              f"Nothing was changed.", file=sys.stderr)
+        return EXIT_CANNOT_PROCEED
     print(f"[recheck] process {os.getpid()}: restored case {args.case} from its Strands session; "
           f"continuing at node 'assess'")
     try:
         asyncio.run(graph.invoke_async(
             [{"interruptResponse": {"interruptId": pending.id, "response": _answer_payload(args.answer)}}]
         ))
-    except Exception as exc:  # noqa: BLE001
-        print(f"[recheck] resume failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except BaseException as exc:
+        kept = _recover_failed_resume(args, store, snapshot, case.source_path)
+        if not isinstance(exc, Exception):
+            print(f"[recheck] resume interrupted ({type(exc).__name__}). {kept}", file=sys.stderr)
+            raise
+        print(f"[recheck] resume failed: {type(exc).__name__}: {exc}. {kept}", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
 
     outcome = outcome_from_case(store, args.case)
@@ -407,7 +439,7 @@ def _resume_locked(args, store: CaseStore) -> int:
         # compute node refused), printing it would hand out a command that
         # cannot work, so say what can.
         try:
-            reopened = outstanding_interrupt(build_graph(store, args.case, case.source_path, None))
+            reopened = open_question(build_graph(store, args.case, case.source_path, None), args.case)
         except Exception:  # noqa: BLE001
             reopened = None
         if reopened is None:
@@ -416,8 +448,44 @@ def _resume_locked(args, store: CaseStore) -> int:
                   file=sys.stderr)
             return EXIT_CANNOT_PROCEED
         print(question_text(store, args.case, _store_flag(args), exiting=True, store_note=_store_note(args)))
-        return EXIT_CANNOT_PROCEED
+        # A rejected answer is a refusal (3). A question raised after an
+        # accepted answer - a follow-up for a fact still missing - is the
+        # case waiting on a reviewer, the documented 2; it exited 3, so a
+        # wrapper recorded an open question as a failure.
+        return EXIT_CANNOT_PROCEED if store.load(args.case).rejected_answer else EXIT_AWAITING_HUMAN
     return _finish(args, store, outcome)
+
+
+def _recover_failed_resume(args, store: CaseStore, snapshot, source_path: str) -> str:
+    """After a resume raised part-way, leave the case in a state a later command can use; say which.
+
+    A run that raised (a case.json another program holds, a full disk,
+    Ctrl+C) had consumed the question in the Strands session and left no node
+    waiting on it, while case.json still said "awaiting_human": the reviewer
+    could never answer again, and only --fresh - which discards everything -
+    got the case moving. So the case and its session are put back as they
+    were before this attempt.
+
+    Except when the answer was already committed. A case that now loads as
+    "ready" has its accepted answers on file and is finished by `resume`
+    without an answer; one that loads as "complete" has a result the load
+    re-derived. Rolling either back would throw away an accepted answer.
+    """
+    try:
+        status = store.load(args.case).status
+    except Exception:  # noqa: BLE001 - whatever is on disk now is not trusted
+        status = None
+    if status == "ready":
+        return (f"The answer was accepted and is on file; finish the case with "
+                f"`recheck{_store_flag(args)} resume --case {args.case}` (no --answer).")
+    if status == "complete":
+        return f"The case is complete; `recheck{_store_flag(args)} show --case {args.case}` prints it."
+    try:
+        store.restore(snapshot)
+    except BaseException as restore_exc:  # noqa: BLE001 - report both failures
+        return (f"The case could not be put back as it was ({type(restore_exc).__name__}: {restore_exc}); "
+                f"re-audit it with {_audit_again(args, source_path, args.case)}.")
+    return "The case and its question were put back as they were; answer again when the cause is fixed."
 
 
 def _finish_ready(args, store: CaseStore, case) -> int:
@@ -524,6 +592,7 @@ def cmd_show(args) -> int:
     store = CaseStore(args.store)
     try:
         case = store.load(args.case)
+        args.case = case.case_id  # as recorded; see cmd_resume
         changed = bool(case.letter_changed())
         # A case "awaiting" a question its session does not hold printed the
         # question and a resume command that was always refused.
@@ -536,7 +605,7 @@ def cmd_show(args) -> int:
             notice = ("THIS QUESTION CANNOT BE ANSWERED: the case's Strands session does not hold it, so any "
                       "answer would be refused.")
         print()
-        print(render(case, show_trace=not args.brief, notice=notice))
+        print(render(case, show_trace=not args.brief, notice=notice, question_open=not lost))
         if changed:
             print(f"[recheck] the letter for case {args.case} has changed since it was audited. To audit it as it "
                   f"is now, run {_audit_again(args, case.source_path, args.case)}.", file=sys.stderr)

@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass
 
 from recheck.case import RULE_426D_ACTION, Case, CaseBusy, CaseCorrupt, CaseStore, _WINDOWS_RESERVED
-from recheck.provenance import Actor
+from recheck.provenance import Actor, wrap
 
 EXIT_OK = 0
 EXIT_AWAITING_HUMAN = 2
@@ -89,16 +89,32 @@ def question_is_open(store: CaseStore, case: Case) -> bool:
     status view and `show` still printed NEEDS YOUR ANSWER and a resume
     command that was always refused. A missing session directory is checked
     first, because building a graph over it would create an empty session.
+
+    An activated interrupt is not enough either: a run that raised part-way
+    leaves one with no node waiting on it (the graph is not INTERRUPTED), and
+    no answer can reach it. Such a stranded case was shown as NEEDS YOUR
+    ANSWER with a resume command that could never work.
     """
-    from recheck.graph import build_graph, interrupt_id, outstanding_interrupt
+    from recheck.graph import build_graph
 
     if not store.session_dir(case.case_id).is_dir():
         return False
     try:
-        pending = outstanding_interrupt(build_graph(store, case.case_id, case.source_path, None))
+        return open_question(build_graph(store, case.case_id, case.source_path, None), case.case_id) is not None
     except Exception:  # noqa: BLE001 - the persisted session is untrusted input
         return False
-    return pending is not None and pending.id == interrupt_id(case.case_id)
+
+
+def open_question(graph, case_id: str):
+    """The case's interrupt, if the restored graph is really waiting on it; else None."""
+    from strands.multiagent.base import Status
+
+    from recheck.graph import interrupt_id, outstanding_interrupt
+
+    pending = outstanding_interrupt(graph)
+    state = getattr(graph, "state", None)
+    waiting = state is not None and state.status == Status.INTERRUPTED and bool(state.interrupted_nodes)
+    return pending if waiting and pending is not None and pending.id == interrupt_id(case_id) else None
 
 
 def outcome_from_case(store: CaseStore, case_id: str, *, reused: bool = False) -> Outcome:
@@ -141,14 +157,18 @@ def sweep(
     single audit code path and this module stays testable in isolation.
     """
     outcomes: list[Outcome] = []
-    claimed: dict[str, pathlib.Path] = {}
+    # Keyed ignoring letter case: on Windows and macOS "PAIR" and "pair" are
+    # one case directory, and PAIR.txt and pair.pdf in one folder took turns
+    # overwriting it - the second discarded the first's answered case.
+    claimed: dict[str, tuple[str, pathlib.Path]] = {}
     for path in documents_in(directory):
         case_id = case_id_for(path)
-        if case_id in claimed:
-            outcome = Outcome(case_id, Outcome.FAILED,
-                              f"{path.name} and {claimed[case_id].name} map to the same case id; rename one")
+        if case_id.casefold() in claimed:
+            other_id, other = claimed[case_id.casefold()]
+            same = "the same case id" if other_id == case_id else "the same case id, ignoring letter case"
+            outcome = Outcome(case_id, Outcome.FAILED, f"{path.name} and {other.name} map to {same}; rename one")
         else:
-            claimed[case_id] = path
+            claimed[case_id.casefold()] = (case_id, path)
             try:
                 # A resume or another sweep acting on this case at the same time
                 # corrupted it; the sweep leaves a busy case alone.
@@ -157,6 +177,8 @@ def sweep(
             except CaseBusy as exc:
                 outcome = Outcome(case_id, Outcome.FAILED, str(exc))
             except OSError as exc:
+                outcome = Outcome(case_id, Outcome.FAILED, f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - one bad case must not stop the sweep
                 outcome = Outcome(case_id, Outcome.FAILED, f"{type(exc).__name__}: {exc}")
         outcomes.append(outcome)
         if show_progress:
@@ -174,7 +196,14 @@ def _audit_or_reuse(store, case_id, path, factory, run_audit, fresh) -> Outcome:
     if store.exists(case_id):
         try:
             existing = store.load(case_id)
-        except CaseCorrupt:
+        except CaseCorrupt as exc:
+            if not fresh:
+                # Never discarded without --fresh. A case this build cannot
+                # load may still hold a reviewer's answer - a stricter check,
+                # or a name collision, made an answered case look corrupt, and
+                # the sweep deleted it and asked the question again.
+                return Outcome(case_id, Outcome.FAILED,
+                               f"{exc}. Nothing was deleted; re-audit with --fresh", reused=True)
             existing = None
         same_document = existing is not None and _same_path(existing.source_path, path)
         if existing is not None and not same_document and not fresh:
@@ -244,7 +273,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
 
     for outcome in outcomes:
         if outcome.state == Outcome.FAILED:
-            failed.append((outcome, [f"     {outcome.case_id:<12} {outcome.detail[:60]}"]))
+            failed.append((outcome, _detail_rows(outcome.case_id, outcome.detail)))
             continue
         try:
             case = store.load(outcome.case_id)
@@ -261,8 +290,13 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
                 lines.append(f"       recheck{store_flag} resume --case {outcome.case_id} --answer \"{placeholder}\"")
             elif outcome.state == Outcome.UNDETERMINED:
                 bucket = undetermined
-                lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}: "
-                         f"{(case.undetermined_reason or '')[:44]}"]
+                if case.possible_degrees:
+                    lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}: "
+                             f"{(case.undetermined_reason or '')[:44]}"]
+                else:
+                    # No degrees: the enumeration was over its limit. This row
+                    # read "could be ?: too many facts are unknown to try every poss".
+                    lines = [f"     {outcome.case_id:<12} could not be enumerated: too many unknown facts"]
             elif case.recomputed_degree == case.stated_combined:
                 bucket, lines = agree, []
             else:
@@ -270,7 +304,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
                 lines = [f"       {outcome.case_id:<12} stated {case.stated_combined}%   "
                          f"recomputed {case.recomputed_degree}%   {_discrepancy_note(case)}"]
         except Exception as exc:  # noqa: BLE001 - one bad case must not cost the operator the whole triage
-            failed.append((outcome, [f"     {outcome.case_id:<12} {f'case unreadable: {exc}'[:60]}"]))
+            failed.append((outcome, _detail_rows(outcome.case_id, f"case unreadable: {exc}")))
             continue
         for key in counts:
             groups[key] += 1
@@ -329,6 +363,16 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
                    f"add --fresh to re-audit them")
     out.append(BAR)
     return "\n".join(out)
+
+
+def _detail_rows(case_id: str, detail: str) -> list[str]:
+    """A COULD NOT PROCEED row, wrapped rather than cut.
+
+    Cut at 60 characters, the reason a case could not be used lost its end -
+    and the end is where the way forward ("re-audit with --fresh") is.
+    """
+    first, *rest = wrap(detail, 60)
+    return [f"     {case_id:<12} {first}"] + [f"     {'':<12} {line}" for line in rest]
 
 
 def _or(values) -> str:
