@@ -79,33 +79,38 @@ class Trace:
     def by_actor(self, actor: Actor) -> list[Entry]:
         return [e for e in self.entries if e.actor is actor]
 
-    @property
-    def actors_involved(self) -> set[Actor]:
-        return {e.actor for e in self.entries}
+    def render(self, width: int = 76, *, ai_label: str = "AI") -> str:
+        """Human-readable trace. This is what appears in the demo.
 
-    def render(self, width: int = 76) -> str:
-        """Human-readable trace. This is what appears in the demo."""
+        `ai_label` lets a report say plainly when AI entries were replayed from
+        a fixture rather than produced by a model.
+        """
         lines: list[str] = []
         for entry in self.entries:
-            lines.append(f"[{entry.actor.value}]")
+            lines.append(f"[{ai_label if entry.actor is Actor.AI else entry.actor.value}]")
             head = f"  {entry.action}"
             if entry.value is not None:
                 head += f": {entry.value}"
             lines.append(head)
             if entry.detail:
-                for chunk in _wrap(entry.detail, width - 6):
+                for chunk in wrap(entry.detail, width - 6):
                     lines.append(f"      {chunk}")
             meta: list[str] = []
             if entry.confidence is not None:
                 meta.append(f"confidence {entry.confidence:.2f}")
             if entry.rule:
                 meta.append(entry.rule)
-            meta.append(f"evidence: {entry.evidence}" if entry.evidence else "evidence: none recorded")
+            if entry.evidence:
+                meta.append(f"evidence: {entry.evidence}")
+            elif not entry.rule:
+                # A rule is its own basis for arithmetic; anything else without
+                # a location in the letter says so rather than inventing one.
+                meta.append("evidence: none recorded")
             lines.append(f"      ({'; '.join(meta)})")
         return "\n".join(lines)
 
 
-def _wrap(text: str, width: int) -> list[str]:
+def wrap(text: str, width: int) -> list[str]:
     words = text.split()
     out: list[str] = []
     current = ""

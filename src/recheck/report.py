@@ -5,135 +5,191 @@ Recheck is an audit aid. It does not adjudicate, and it has no access to the
 evidence, the examination findings, or the rating criteria the VA applied. It
 compares the arithmetic it can verify against the value the letter states.
 
-So the verdict is always framed as:
+So a difference is always framed as:
 
     POTENTIAL DISCREPANCY - HUMAN REVIEW RECOMMENDED
 
-and never as "the VA is wrong". A difference can have legitimate causes this
-tool cannot see, including a different and equally lawful judgment about
-which conditions are paired extremities - which is exactly the ambiguity the
-interrupt exists to surface.
+and never as "the VA is wrong". And a result that depends on a fact nobody
+established is reported as UNDETERMINED, with the ratings it could be - never
+as agreement.
 """
 
 from __future__ import annotations
 
+import pathlib
+from collections import Counter
+
 from recheck.case import Case
-from recheck.provenance import Actor
+from recheck.provenance import Actor, wrap
 
 RULE = "=" * 74
 THIN = "-" * 74
 
 DISCLAIMER = (
-    "Recheck verifies combined-rating arithmetic against 38 CFR 4.25 and 4.26. "
-    "It is not legal advice, not a VA adjudication, and not a claims or appeals "
-    "service. It cannot see the medical evidence or the rating criteria applied, "
-    "so a difference is a question to raise with an accredited representative - "
-    "not a conclusion that the decision is wrong."
+    "Recheck checks combined-rating arithmetic against 38 CFR 4.25 and 4.26 as currently "
+    "in force. It reads the narrative decision letter, not the rating code sheet. It is not "
+    "legal advice, not a VA adjudication, and not a claims or appeals service. It cannot see "
+    "the medical evidence or the rating criteria applied, so a difference is a question to "
+    "raise in review - not a conclusion that the decision is wrong."
 )
+
+
+def _or(values) -> str:
+    items = [f"{v}%" for v in values]
+    if not items:
+        return "not established"
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
 
 
 def verdict(case: Case) -> tuple[str, str]:
     """Return (headline, explanation). Never asserts the VA erred."""
+    stated = f"{case.stated_combined}%" if case.stated_combined is not None else "no value"
+    if case.status == "awaiting_human":
+        return (
+            "AWAITING YOUR ANSWER",
+            f"The letter states {stated}. Depending on facts the letter does not establish, "
+            f"the rating could be {_or(case.possible_degrees)}. Answer the question to finish "
+            f"this case.",
+        )
+    if case.status == "undetermined":
+        return (
+            "UNDETERMINED - NOT COMPUTED",
+            f"{(case.undetermined_reason or 'the facts needed are not established').capitalize()}. "
+            f"The rating could be {_or(case.possible_degrees)}; the letter states {stated}. "
+            f"Recheck does not pick one.",
+        )
+    if case.status == "unparsed":
+        return ("COULD NOT READ THE LETTER",
+                "No assigned evaluations or no combined evaluation statement were found.")
     if case.recomputed_degree is None:
-        return (
-            "INCOMPLETE - NO RECOMPUTATION",
-            "Recheck could not establish enough facts to recompute this evaluation.",
-        )
+        return ("INCOMPLETE - NO RECOMPUTATION",
+                "Recheck could not establish enough facts to recompute this evaluation.")
     if case.stated_combined is None:
-        return (
-            "NO STATED VALUE TO COMPARE",
-            f"Recheck computes {case.recomputed_degree}% but the letter did not state a "
-            f"combined evaluation.",
-        )
+        return ("NO STATED VALUE TO COMPARE",
+                f"Recheck computes {case.recomputed_degree}% but the letter did not state a "
+                f"combined evaluation.")
+
+    basis = "the evaluations as printed"
+    if case.human_answers:
+        basis += " and the facts you supplied for " + ", ".join(f"[{i}]" for i in case.human_answers)
     if case.recomputed_degree == case.stated_combined:
         return (
             "NO DISCREPANCY FOUND",
-            f"The stated combined evaluation of {case.stated_combined}% matches Recheck's "
-            f"recomputation under 38 CFR 4.25/4.26.",
+            f"Applying 38 CFR 4.25 and 4.26 to {basis} gives {case.recomputed_degree}%, the same "
+            f"as the {stated} the letter states.",
         )
-    direction = "higher" if case.recomputed_degree > case.stated_combined else "lower"
+    higher = case.recomputed_degree > case.stated_combined
+    caution = (
+        "" if higher else
+        " A LOWER recomputation is not an opportunity: raising it could prompt VA to review "
+        "the rating downward. Weigh that before acting."
+    )
     return (
         "POTENTIAL DISCREPANCY - HUMAN REVIEW RECOMMENDED",
-        f"The letter states {case.stated_combined}%. Applying 38 CFR 4.25 and 4.26 to the "
-        f"individual evaluations as printed gives {case.recomputed_degree}%, which is "
-        f"{direction}. This is a question for an accredited representative, not a finding "
-        f"of error - the difference may rest on a judgment about paired extremities that "
-        f"Recheck surfaced rather than resolved.",
+        f"The letter states {stated}. Applying 38 CFR 4.25 and 4.26 to {basis} gives "
+        f"{case.recomputed_degree}%, which is {'higher' if higher else 'lower'}. Check it against "
+        f"the rating code sheet and claims file: this is a question to raise in review, not a "
+        f"finding of error, and the difference may rest on facts or judgments Recheck cannot "
+        f"see.{caution}",
+    )
+
+
+def classifier_note(case: Case) -> str:
+    label = case.classifier or "none"
+    if label.startswith("scripted"):
+        return f"AI decisions replayed from a committed fixture ({label.split(':', 1)[-1].strip()}) - no model was called"
+    if label == "none":
+        return "no classifier: terms outside the lexicon are left unknown"
+    return f"AI decisions from a live model ({label})"
+
+
+def timeline_line(case: Case) -> str | None:
+    if not case.timeline:
+        return None
+    groups: list[tuple[int, list[str]]] = []
+    for step in case.timeline:
+        if groups and groups[-1][0] == step["pid"]:
+            groups[-1][1].append(step["node"])
+        else:
+            groups.append((step["pid"], [step["node"]]))
+    return "  ->  ".join(f"{', '.join(nodes)} [process {pid}]" for pid, nodes in groups)
+
+
+def ownership_line(case: Case) -> str:
+    decisions = case.load_decisions()
+    groups = Counter(d.group_by.value if d.group_by else "unknown" for d in decisions)
+    relevant = [d for d in decisions if d.extremity_group != "none"]
+    sides = Counter(d.side_by.value if d.side_by else "unknown" for d in relevant)
+
+    def fmt(counter: Counter, labels: dict[str, str]) -> str:
+        return ", ".join(f"{counter[k]} {v}" for k, v in labels.items() if counter[k]) or "none needed"
+
+    return (
+        "who established what: extremity group - "
+        + fmt(groups, {"DETERMINISTIC": "lexicon", "AI": "AI", "HUMAN": "reviewer", "unknown": "unknown"})
+        + "; side - "
+        + fmt(sides, {"DETERMINISTIC": "from the letter", "HUMAN": "reviewer", "unknown": "unknown"})
+        + "; arithmetic - deterministic"
     )
 
 
 def render(case: Case, *, show_trace: bool = True) -> str:
-    out: list[str] = []
-    out.append(RULE)
-    out.append("RECHECK - combined rating verification")
-    out.append(f"case {case.case_id}   source: {case.source_path}")
-    out.append(RULE)
+    out: list[str] = [RULE, "RECHECK - combined rating verification",
+                      f"case {case.case_id}   letter: {pathlib.Path(case.source_path).name}",
+                      classifier_note(case), RULE]
 
     if show_trace and case.trace:
-        out.append("")
-        out.append("DECISION TRACE - who decided what")
-        out.append(THIN)
-        out.append(case.load_trace().render())
+        ai_label = "AI - replayed fixture" if (case.classifier or "").startswith("scripted") else "AI"
+        out += ["", "DECISION TRACE - who decided what", THIN, case.load_trace().render(ai_label=ai_label)]
 
     decisions = case.load_decisions()
     if decisions:
-        out.append("")
-        out.append("EVALUATIONS AS EXTRACTED")
-        out.append(THIN)
-        out.append(f"  {'#':<3}{'%':<6}{'group/side':<18}{'decided by':<15}condition")
+        out += ["", "EVALUATIONS  (who established each fact in brackets)", THIN]
         for index, d in enumerate(decisions):
-            side = f"{d.extremity_group}/{d.laterality}"
-            flag = "  <-- needs human" if d.needs_human else ""
-            out.append(
-                f"  {index:<3}{str(d.percent) + '%':<6}{side:<18}{d.decided_by.value:<15}"
-                f"{d.condition[:30]}{flag}"
-            )
+            lines = wrap(d.condition, 64) or [""]
+            out.append(f"  [{index}] {str(d.percent) + '%':<5}{lines[0]}")
+            out += [f"{'':11}{line}" for line in lines[1:]]
+            facts = f"extremity group: {d.extremity_group} [{_by(d.group_by)}]"
+            if d.extremity_group != "none":
+                facts += f"   side: {d.laterality} [{_by(d.side_by, side=True)}]"
+            out.append(f"{'':11}{facts}")
 
-    out.append("")
-    out.append("ARITHMETIC")
-    out.append(THIN)
-    out.append(f"  stated combined evaluation     {_pct(case.stated_combined)}")
-    out.append(f"  recomputed combined value      {_pct(case.recomputed_combined)}")
-    out.append(f"  recomputed final degree        {_pct(case.recomputed_degree)}")
-    out.append(f"  38 CFR 4.26 bilateral factor   {'applied' if case.bilateral_applied else 'not applied'}")
-    if case.alternative_degree is not None:
-        out.append(f"  alternative without/with 4.26  {case.alternative_degree}%")
-    if case.bilateral_note:
-        out.append(f"  note: {case.bilateral_note}")
+    def row(label: str, value: object) -> str:
+        return f"  {label:<34}{value}"
+
+    out += ["", "ARITHMETIC", THIN, row("stated combined evaluation", _pct(case.stated_combined))]
+    if case.status == "complete":
+        out += [
+            row("recomputed combined value", case.recomputed_combined),
+            row("recomputed final degree", _pct(case.recomputed_degree)),
+            row("38 CFR 4.26 bilateral factor", "applied" if case.bilateral_applied else "not applied"),
+        ]
+        if case.alternative_degree is not None and case.alternative_degree != case.recomputed_degree:
+            other = "without" if case.bilateral_applied else "with"
+            out.append(row(f"final degree {other} the factor", f"{case.alternative_degree}%"))
+        if case.immaterial_unknowns:
+            listed = ", ".join(f"[{i}]" for i in case.immaterial_unknowns)
+            out.append(f"  unknown facts for {listed} could not change this result, so nobody was asked")
+    else:
+        out.append(row("possible final degrees", _or(case.possible_degrees)))
 
     headline, explanation = verdict(case)
-    out.append("")
-    out.append(RULE)
-    out.append(headline)
-    out.append(RULE)
-    for line in _wrap(explanation, 72):
-        out.append(line)
-
-    counts = {a.value: len(case.load_trace().by_actor(a)) for a in Actor}
-    out.append("")
-    out.append(
-        f"ownership: {counts['DETERMINISTIC']} deterministic, {counts['AI']} AI, "
-        f"{counts['HUMAN']} human decision(s)"
-    )
-    out.append("")
-    for line in _wrap(DISCLAIMER, 72):
-        out.append(line)
-    out.append(RULE)
+    out += ["", RULE, headline, RULE] + wrap(explanation, 72)
+    out += ["", *wrap(ownership_line(case), 72)]
+    timeline = timeline_line(case)
+    if timeline:
+        out += wrap("graph nodes: " + timeline, 72)
+    out += [""] + wrap(DISCLAIMER, 72) + [RULE]
     return "\n".join(out)
+
+
+def _by(actor: Actor | None, *, side: bool = False) -> str:
+    if actor is None:
+        return "not established"
+    if actor is Actor.DETERMINISTIC:
+        return "letter" if side else "lexicon"
+    return {"AI": "AI", "HUMAN": "reviewer"}[actor.value]
 
 
 def _pct(value: int | None) -> str:
     return "not established" if value is None else f"{value}%"
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    words, out, current = text.split(), [], ""
-    for word in words:
-        if current and len(current) + 1 + len(word) > width:
-            out.append(current)
-            current = word
-        else:
-            current = f"{current} {word}".strip()
-    if current:
-        out.append(current)
-    return out

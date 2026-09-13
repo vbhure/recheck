@@ -14,7 +14,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-Laterality = Literal["left", "right", "bilateral", "unknown", "not_applicable"]
 # "none" means recognised as a non-extremity condition. "unrecognised"
 # means the lexicon has no opinion - a genuinely different state, and the
 # only one that justifies a model call.
@@ -33,17 +32,54 @@ LOWER_TERMS = {
 UPPER_PHRASES = ("upper extremity", "upper extremities")
 LOWER_PHRASES = ("lower extremity", "lower extremities")
 
-# Conditions that are never extremity disabilities.
+# Conditions that are never extremity disabilities - but only when nothing in
+# the name points at an arm or a leg. "Radiculopathy, right lower extremity,
+# associated with lumbosacral strain" is a leg disability; checking these
+# hints first used to call it "none" and silently drop a 4.26 pair.
 NON_EXTREMITY_HINTS = (
     "tinnitus", "post-traumatic stress", "ptsd", "hearing", "migraine",
     "lumbosacral", "spine", "sleep apnea", "diabetes",
 )
 
+# Clauses that name a DIFFERENT condition the rated one is linked to. The
+# rated condition's own anatomy and side come before them: in "Left knee
+# strain, secondary to right knee strain" the rated knee is the left one.
+_LINKED_CLAUSE = re.compile(
+    r"[,;]?\s*\(?\b(?:secondary to|associated with|due to|claimed as|incident to|aggravated by|"
+    r"as a result of|resulting from)\b.*$",
+    re.I,
+)
+# Handedness is not a side: "(right hand dominant)", "(major)", "right-handed".
+_HANDEDNESS = re.compile(
+    r"\((?:[^)]*\b(?:dominant|major|minor|handed)\b[^)]*)\)"
+    r"|\b(?:right|left)[- ]hand(?:ed)? dominant\b|\b(?:right|left)-handed\b",
+    re.I,
+)
+
+
+def primary_clause(condition: str) -> str:
+    """The part of a condition name that describes the rated condition itself."""
+    text = _HANDEDNESS.sub(" ", condition)
+    text = _LINKED_CLAUSE.sub("", text)
+    return " ".join(text.split()).strip(" ,;")
+
+
+def linked_clause(condition: str) -> str:
+    """Whatever primary_clause removed (the linked condition), if anything."""
+    text = " ".join(_HANDEDNESS.sub(" ", condition).split())
+    match = _LINKED_CLAUSE.search(text)
+    return match.group(0) if match else ""
+
 LEXICON_SIZE = len(UPPER_TERMS) + len(LOWER_TERMS) + len(UPPER_PHRASES) + len(LOWER_PHRASES)
 
 # Percentages after these headings describe rating CRITERIA, not the
-# veteran's assigned evaluations.
+# veteran's assigned evaluations. Matched only as a heading on its own line:
+# an unanchored match cut the ratings list at "with x-ray evidence of
+# arthritis" inside a rating line and silently dropped every later rating.
 STOP_HEADINGS = ("REASONS FOR DECISION", "EVIDENCE", "REFERENCES")
+_STOP_HEADING = re.compile(
+    r"^[ \t]*(?:" + "|".join(STOP_HEADINGS) + r")[ \t]*:?[ \t]*$", re.I | re.M
+)
 
 _TABULAR = re.compile(
     r"^\s*\d+\.\s*(?P<condition>.+?)\s*\.{3,}\s*(?P<pct>\d{1,3})\s*%",
@@ -66,9 +102,14 @@ _COMBINED = [
 
 @dataclass
 class ExtractedRating:
+    """One assigned evaluation, with where in the letter it was found.
+
+    Which side a condition is on is not recorded here. It is derived from the
+    condition text in exactly one place, recheck.classify.derive_laterality.
+    """
+
     condition: str
     percent: int
-    laterality: Laterality
     extremity_group: ExtremityGroup
     source_line: str
     source_line_number: int
@@ -78,7 +119,6 @@ class ExtractedRating:
 class Extraction:
     ratings: list[ExtractedRating] = field(default_factory=list)
     stated_combined: int | None = None
-    ambiguities: list[str] = field(default_factory=list)
     unparsed_reason: str | None = None
 
     @property
@@ -88,13 +128,8 @@ class Extraction:
 
 def _decision_scope(text: str) -> str:
     """Trim explanatory sections whose percentages are not assigned ratings."""
-    cut = len(text)
-    upper = text.upper()
-    for heading in STOP_HEADINGS:
-        index = upper.find(heading)
-        if index != -1:
-            cut = min(cut, index)
-    return text[:cut]
+    match = _STOP_HEADING.search(text)
+    return text[: match.start()] if match else text
 
 
 def _sentences(text: str) -> list[str]:
@@ -113,37 +148,37 @@ def _sentences(text: str) -> list[str]:
     return [p.replace("<DOT>", ".").strip() for p in parts if p.strip()]
 
 
-def _classify_extremity(condition: str) -> ExtremityGroup:
-    low = condition.lower()
+def _lexical_group(text: str) -> ExtremityGroup:
+    low = text.lower()
+    words = set(re.findall(r"[a-z]+", low))
+    upper = any(p in low for p in UPPER_PHRASES) or bool(words & UPPER_TERMS)
+    lower = any(p in low for p in LOWER_PHRASES) or bool(words & LOWER_TERMS)
+    if upper and lower:
+        return "unrecognised"  # "hand and foot" - not the lexicon's call
+    if upper:
+        return "upper"
+    if lower:
+        return "lower"
     if any(hint in low for hint in NON_EXTREMITY_HINTS):
         return "none"
-    if any(p in low for p in UPPER_PHRASES):
-        return "upper"
-    if any(p in low for p in LOWER_PHRASES):
-        return "lower"
-    words = set(re.findall(r"[a-z]+", low))
-    if words & UPPER_TERMS:
-        return "upper"
-    if words & LOWER_TERMS:
-        return "lower"
     return "unrecognised"
 
 
-def _classify_laterality(condition: str, group: ExtremityGroup) -> Laterality:
-    if group in ("none", "unrecognised"):
-        return "not_applicable"
-    low = condition.lower()
-    if re.search(r"\bbilateral\b", low):
-        return "bilateral"
-    has_left = re.search(r"\bleft\b", low) is not None
-    has_right = re.search(r"\bright\b", low) is not None
-    if has_left and has_right:
-        return "bilateral"
-    if has_left:
-        return "left"
-    if has_right:
-        return "right"
-    return "unknown"
+def _classify_extremity(condition: str) -> ExtremityGroup:
+    """The lexicon's verdict on a condition name: upper, lower, none, or no opinion.
+
+    Anatomy in the rated condition itself decides first. When the rated
+    condition names no anatomy but a linked clause does ("radiculopathy
+    associated with lumbar spine", "strain secondary to a knee injury"), the
+    lexicon has no opinion - it does not guess from the other condition.
+    """
+    primary = _lexical_group(primary_clause(condition))
+    if primary != "unrecognised":
+        return primary
+    if linked_clause(condition):
+        return "unrecognised"
+    return primary
+
 
 
 _LEAD_IN = re.compile(r"(?:service connection for|evaluation of)\s+", re.I)
@@ -169,33 +204,75 @@ def _clean(condition: str) -> str:
     return condition.strip(" .,—-")
 
 
+class _LineIndex:
+    """Map a phrase found in whitespace-normalised text back to letter lines.
+
+    Letters are hard-wrapped, so a condition can start on one line and end
+    on the next. Searching raw lines for the phrase misses it, and the
+    evidence then reads "none recorded" - or, worse, points at the wrong
+    line. Instead the text is flattened once, keeping for every character the
+    offset it came from.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.lines = text.splitlines()
+        flat: list[str] = []
+        origin: list[int] = []
+        previous_space = False
+        for offset, char in enumerate(text):
+            if char.isspace():
+                if previous_space:
+                    continue
+                flat.append(" ")
+                previous_space = True
+            else:
+                flat.append(char.lower())
+                previous_space = False
+            origin.append(offset)
+        self.flat = "".join(flat)
+        self.origin = origin
+        self.cursor = 0
+
+    def _line_of(self, offset: int) -> int:
+        return self.text.count("\n", 0, offset) + 1
+
+    def locate(self, phrase: str) -> tuple[str, int]:
+        """(source text, first line number) for the next occurrence of phrase."""
+        needle = " ".join(phrase.lower().split())
+        if not needle:
+            return "", 0
+        # Search forward from the previous hit so repeated wording ("limitation
+        # of flexion of the ...") maps to successive lines, then from the top.
+        for probe in (needle, needle[:32]):
+            at = self.flat.find(probe, self.cursor)
+            if at == -1:
+                at = self.flat.find(probe)
+            if at != -1:
+                end = min(at + len(probe), len(self.origin)) - 1
+                first, last = self._line_of(self.origin[at]), self._line_of(self.origin[end])
+                self.cursor = at + len(probe)
+                span = " ".join(line.strip() for line in self.lines[first - 1:last])
+                return span, first
+        return phrase.strip()[:120], 0
+
+
 def parse(text: str) -> Extraction:
     """Extract ratings and the stated combined evaluation from letter text."""
     result = Extraction()
     scope = _decision_scope(text)
-    lines = text.splitlines()
-
-    def locate(fragment: str) -> tuple[str, int]:
-        head = fragment.strip().split("\n")[0][:38]
-        if head:
-            for number, line in enumerate(lines, start=1):
-                if head in line:
-                    return line.strip(), number
-        return fragment.strip()[:120], 0
-
+    index = _LineIndex(text)
     seen: set[tuple[str, int]] = set()
 
+    # Every numbered row is its own evaluation, even when two rows read
+    # identically (two separately rated scars): tabular rows are never deduped.
     for match in _TABULAR.finditer(scope):
         condition = _clean(match.group("condition"))
         percent = int(match.group("pct"))
-        key = (condition.lower(), percent)
-        if key in seen:
-            continue
-        seen.add(key)
-        src, number = locate(match.group(0))
-        group = _classify_extremity(condition)
+        number = scope.count("\n", 0, match.start("condition")) + 1
+        source = index.lines[number - 1].strip() if number <= len(index.lines) else condition
         result.ratings.append(
-            ExtractedRating(condition, percent, _classify_laterality(condition, group), group, src, number)
+            ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
         )
 
     if not result.ratings:
@@ -214,10 +291,9 @@ def parse(text: str) -> Extraction:
                 if not condition or key in seen:
                     break
                 seen.add(key)
-                src, number = locate(condition)
-                group = _classify_extremity(condition)
+                source, number = index.locate(condition)
                 result.ratings.append(
-                    ExtractedRating(condition, percent, _classify_laterality(condition, group), group, src, number)
+                    ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
                 )
                 break  # most specific pattern wins for a given sentence
 
@@ -227,31 +303,8 @@ def parse(text: str) -> Extraction:
             result.stated_combined = int(match.group(1))
             break
 
-    for rating in result.ratings:
-        if rating.extremity_group in ("upper", "lower") and rating.laterality == "unknown":
-            result.ambiguities.append(
-                f"'{rating.condition}' is a {rating.extremity_group} extremity condition but the "
-                f"letter does not state left or right; 4.26 eligibility cannot be determined."
-            )
-
     if not result.ratings:
         result.unparsed_reason = "no rating lines matched any known tabular or prose pattern"
     elif result.stated_combined is None:
         result.unparsed_reason = "no combined evaluation statement found"
     return result
-
-
-def candidate_bilateral_pairs(ratings: list[ExtractedRating]) -> list[tuple[int, int]]:
-    """Index pairs satisfying 4.26: same group, opposite sides, both compensable."""
-    pairs: list[tuple[int, int]] = []
-    for i, a in enumerate(ratings):
-        for j in range(i + 1, len(ratings)):
-            b = ratings[j]
-            if a.extremity_group not in ("upper", "lower") or a.extremity_group != b.extremity_group:
-                continue
-            if {a.laterality, b.laterality} != {"left", "right"}:
-                continue
-            if a.percent < 10 or b.percent < 10:
-                continue
-            pairs.append((i, j))
-    return pairs

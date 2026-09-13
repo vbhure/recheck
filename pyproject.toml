@@ -5,20 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "recheck"
 version = "0.1.0"
-description = "Deterministic verification of VA combined disability ratings, with a narrow AI boundary and human-in-the-loop clarification"
+description = "A caseload agent that re-checks the combined rating in VA decision letters and asks a person only when the answer would change the rating"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
   "strands-agents==1.55.1",
-  "strands-agents-tools==0.8.8",
-  "pydantic>=2.11",
-  "pypdf>=6.0",
-  "fpdf2>=2.8",
+  "pydantic==2.13.5",
+  "pypdf==6.18.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+# fpdf2 builds PDFs for the PDF-ingestion tests only.
+dev = ["pytest==9.1.1", "fpdf2==2.8.8"]
 # Live providers are OPTIONAL. The canonical verification path (--scripted)
 # needs none of them, and the core product does not depend on provider
 # availability.

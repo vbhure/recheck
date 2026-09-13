@@ -4,14 +4,22 @@ Two different things have to survive a process boundary, and conflating them
 would be a mistake:
 
   GRAPH STATE    which node is pending, and which interrupt is outstanding.
-                 Owned by Strands (FileSessionManager + graph.serialize_state).
-  DOMAIN STATE   the extracted ratings, the classifications, who decided
-                 each one, the human's answers, and the trace. Owned here.
+                 Owned by Strands: FileSessionManager persists it under
+                 <store>/<case>/session and restores it when the graph is built.
+  DOMAIN STATE   the extracted ratings, the established facts and who
+                 established each one, the reviewer's answers, and the trace.
+                 Owned here, in <store>/<case>/case.json.
 
 Keeping domain state out of the model provider and out of the agent
-framework is deliberate: persistence must not be coupled to either, so the
-provider stays replaceable and a case remains readable without Strands
-installed. The case file is plain JSON on purpose - a reviewer can open it.
+framework is deliberate: a case remains readable without Strands installed,
+and the provider stays replaceable. The case file is plain JSON on purpose - a
+reviewer can open it.
+
+Status moves through an allowlist, and every graph edge checks it:
+
+  open -> extracted -> classified -> ready -> complete
+                          \\-> awaiting_human -> ready | undetermined
+  unparsed, undetermined: terminal, nothing computed
 
 No PII is stored, because none is extracted. The letters are synthetic and
 the only values retained are condition names, percentages, line numbers and
@@ -22,13 +30,18 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from recheck.classify import Decision
 from recheck.provenance import Actor, Entry, Trace
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+STATUSES = (
+    "open", "extracted", "classified", "awaiting_human", "ready", "complete", "unparsed", "undetermined",
+)
 
 
 @dataclass
@@ -37,16 +50,22 @@ class Case:
 
     case_id: str
     source_path: str
+    classifier: str = "none"
     stated_combined: int | None = None
     ratings: list[dict[str, Any]] = field(default_factory=list)
     decisions: list[dict[str, Any]] = field(default_factory=list)
     human_answers: dict[str, str] = field(default_factory=dict)
+    rejected_answer: str | None = None
+    immaterial_unknowns: list[int] = field(default_factory=list)
+    possible_degrees: list[int] = field(default_factory=list)
+    undetermined_reason: str | None = None
     recomputed_combined: int | None = None
     recomputed_degree: int | None = None
     bilateral_applied: bool = False
     bilateral_note: str | None = None
     alternative_degree: int | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
+    timeline: list[dict[str, Any]] = field(default_factory=list)
     status: str = "open"
     schema_version: int = SCHEMA_VERSION
 
@@ -82,16 +101,19 @@ class Case:
         ]
 
     def load_decisions(self) -> list[Decision]:
+        def actor(value: str | None) -> Actor | None:
+            return Actor(value) if value else None
+
         return [
             Decision(
                 condition=d["condition"],
                 percent=d["percent"],
                 extremity_group=d["extremity_group"],
                 laterality=d["laterality"],
-                decided_by=Actor(d["decided_by"]),
+                group_by=actor(d.get("group_by")),
+                side_by=actor(d.get("side_by")),
                 confidence=d.get("confidence"),
-                needs_human=d["needs_human"],
-                reason=d.get("reason"),
+                note=d.get("note"),
                 evidence=d.get("evidence"),
             )
             for d in self.decisions
@@ -99,7 +121,12 @@ class Case:
 
     def store_decisions(self, decisions: list[Decision]) -> None:
         self.decisions = [
-            {**asdict(d), "decided_by": d.decided_by.value} for d in decisions
+            {
+                **asdict(d),
+                "group_by": d.group_by.value if d.group_by else None,
+                "side_by": d.side_by.value if d.side_by else None,
+            }
+            for d in decisions
         ]
 
 
@@ -123,6 +150,12 @@ class CaseStore:
     def exists(self, case_id: str) -> bool:
         return self.path_for(case_id).exists()
 
+    def discard(self, case_id: str) -> None:
+        """Remove a case entirely - domain state and Strands session - to re-audit it."""
+        directory = self.dir_for(case_id)
+        if directory.exists():
+            shutil.rmtree(directory)
+
     def save(self, case: Case) -> pathlib.Path:
         path = self.path_for(case.case_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,17 +173,27 @@ class CaseStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise CaseCorrupt(f"case {case_id} is not valid JSON: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise CaseCorrupt(f"case {case_id} is not a JSON object")
         version = raw.get("schema_version")
         if version != SCHEMA_VERSION:
             raise CaseCorrupt(
                 f"case {case_id} has schema_version {version!r}, this build expects "
-                f"{SCHEMA_VERSION}. Refusing to guess at an incompatible case."
+                f"{SCHEMA_VERSION}. Refusing to guess at an incompatible case; re-audit it."
             )
         known = set(Case.__dataclass_fields__)
         unknown = set(raw) - known
         if unknown:
             raise CaseCorrupt(f"case {case_id} has unexpected fields: {sorted(unknown)}")
-        return Case(**raw)
+        if raw.get("status") not in STATUSES:
+            raise CaseCorrupt(f"case {case_id} has an unknown status {raw.get('status')!r}")
+        try:
+            case = Case(**raw)
+            case.load_decisions()
+            case.load_trace()
+        except (TypeError, KeyError, ValueError) as exc:
+            raise CaseCorrupt(f"case {case_id} has malformed content: {exc}") from exc
+        return case
 
 
 class CaseCorrupt(Exception):
@@ -165,7 +208,12 @@ def _validate_case_id(case_id: str) -> None:
     """
     if not case_id or len(case_id) > 64:
         raise ValueError("case id must be 1-64 characters")
-    if not all(c.isalnum() or c in "-_" for c in case_id):
+    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in case_id):
         raise ValueError(
-            f"case id may contain only letters, digits, '-' and '_'; got {case_id!r}"
+            f"case id may contain only ASCII letters, digits, '-' and '_'; got {case_id!r}"
         )
+    if case_id.lower() in _WINDOWS_RESERVED:
+        raise ValueError(f"case id {case_id!r} is a reserved device name on Windows")
+
+
+_WINDOWS_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}

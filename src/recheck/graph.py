@@ -1,79 +1,63 @@
-"""The Strands Graph: the orchestration boundary.
+"""The Strands Graph: one per document.
 
-    ingest -> extract -> classify -> assess -> compute -> report
+    extract --(gate)--> classify --> assess --(gate)--> compute
                                        |
-                                  (interrupt)
-                                  human supplies laterality only
+                                       v
+                 INTERRUPT - only when an answer would change the rating
 
-Why a Graph rather than a function call chain. Two properties are needed
-that a plain call chain does not give: the run must be able to STOP at
-`assess`, persist, and be resumed by a different process hours later; and
-every transition must be individually observable so the ownership boundary
-can be shown rather than asserted. Strands provides both - interrupts with
-serialised state, and a node topology with an inspectable execution order.
+Why a Graph rather than a function call chain. The run must be able to STOP
+at `assess`, persist, and be continued by a different process later - hours
+later, by a different person - and every step must be observable. Strands
+provides the pieces: an Interrupt raised from a node, a FileSessionManager
+that persists and restores the graph (including the outstanding interrupt),
+conditional edges, and node hooks.
 
 Node ownership, enforced by construction:
-  ingest    DETERMINISTIC   file to text
-  extract   DETERMINISTIC   text to ratings + stated combined value
-  classify  AI (for the gap) extremity group and laterality
-  assess    DETERMINISTIC   is this safe to compute, or must a human decide
-  compute   DETERMINISTIC   38 CFR 4.25 / 4.26
-  report    DETERMINISTIC   evidence-backed comparison
+  extract   DETERMINISTIC   file to ratings + stated combined value
+  classify  AI (for the gap) extremity group only, for terms the lexicon
+                             abstains on; sides are read by deterministic code
+  assess    DETERMINISTIC   which unknown facts could change the rating, and
+                             validation of any human answer
+  compute   DETERMINISTIC   38 CFR 4.25 / 4.26 and the comparison
 
-The model appears in exactly one node, cannot reach `compute`, and cannot
-express a percentage. The human answers exactly one kind of question - which
-side a condition is on - and that answer is validated against the document
-and against 4.26 before any arithmetic uses it.
+Two edges are gates. Returning Status.FAILED from a node does not stop
+downstream nodes in this SDK version, so the topology - not convention - is
+what stops a failed extraction reaching classification, or an open question
+or undetermined case reaching the arithmetic.
+
+Gate conditions must be STABLE. Strands re-evaluates them when it persists
+the session, to work out where a resumed run continues. A condition that
+flips once its target has run (for example "status is classified", which
+stops being true when assess asks a question) empties the resume frontier,
+and the resumed run silently does nothing. So the extraction gate reads the
+extract node's own result from the Strands GraphState, and the compute gate
+accepts only states from which computing is correct and which never revert:
+"ready" and "complete".
+
+Persistence has one owner. FileSessionManager restores graph state,
+including an outstanding interrupt, when the graph is built; the case file
+holds the domain facts. There is no second hand-written copy of graph state.
 """
 
 from __future__ import annotations
 
+import os
 import pathlib
 from typing import Any, Sequence
 
-from strands.agent.agent_result import AgentResult
+from strands.hooks import BeforeNodeCallEvent, HookProvider, HookRegistry
 from strands.interrupt import Interrupt
 from strands.multiagent import GraphBuilder
-from strands.multiagent.base import MultiAgentBase, MultiAgentResult, NodeResult, Status
+from strands.multiagent.base import MultiAgentBase, MultiAgentResult, Status
 from strands.session.file_session_manager import FileSessionManager
-from strands.telemetry.metrics import EventLoopMetrics
 
 from recheck.case import Case, CaseStore
-from recheck.classify import AgentFactory, Decision, classify
-from recheck.extract.deterministic import parse
+from recheck.classify import AgentFactory, Decision, classify_async
+from recheck.extract.deterministic import ExtractedRating, parse
+from recheck.materiality import Materiality, assess as assess_materiality, evaluate_established
 from recheck.provenance import Actor, Trace
 
-INTERRUPT_NAME = "confirm_laterality"
-INTERRUPT_ID = "laterality-1"
-VALID_SIDES = ("left", "right", "unknown")
-
-
-def _node_result(node_id: str, text: str, status: Status = Status.COMPLETED) -> MultiAgentResult:
-    """Wrap a plain string as a MultiAgentResult.
-
-    The nesting is not optional: putting a bare string in NodeResult.result
-    makes session serialisation fail with
-    AttributeError: 'str' object has no attribute 'to_dict'.
-    """
-    agent_result = AgentResult(
-        stop_reason="end_turn",
-        message={"role": "assistant", "content": [{"text": text}]},
-        metrics=EventLoopMetrics(),
-        state={},
-    )
-    return MultiAgentResult(
-        status=status, results={node_id: NodeResult(result=agent_result, status=status)}
-    )
-
-
-def _resume_answer(task: Any) -> str | None:
-    """Extract a human response from a resumed invocation, if present."""
-    if isinstance(task, list):
-        for block in task:
-            if isinstance(block, dict) and "interruptResponse" in block:
-                return str(block["interruptResponse"].get("response", ""))
-    return None
-
+NODE_ORDER = ("extract", "classify", "assess", "compute")
 
 # A rating decision is a handful of pages. These caps are generous by an order
 # of magnitude and exist so that a hostile or accidental input cannot exhaust
@@ -81,6 +65,18 @@ def _resume_answer(task: Any) -> str | None:
 # bomb whose page count explodes on parse.
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_PDF_PAGES = 100
+
+
+def interrupt_id(case_id: str) -> str:
+    return f"recheck:{case_id}:assess"
+
+
+class ScannedDocument(Exception):
+    """The document is an image. Recheck refuses rather than guessing."""
+
+
+class DocumentTooLarge(Exception):
+    """The document exceeds the bounds of anything plausibly a decision letter."""
 
 
 def read_document(path: str | pathlib.Path) -> str:
@@ -118,64 +114,49 @@ def read_document(path: str | pathlib.Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-class ScannedDocument(Exception):
-    """The document is an image. Recheck refuses rather than guessing."""
-
-
-class DocumentTooLarge(Exception):
-    """The document exceeds the bounds of anything plausibly a decision letter."""
+def _done(status: Status = Status.COMPLETED) -> MultiAgentResult:
+    """A node result. Domain output lives in the case file, not in node text."""
+    return MultiAgentResult(status=status)
 
 
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
 
-class IngestExtractNode(MultiAgentBase):
+class ExtractNode(MultiAgentBase):
     """DETERMINISTIC. Document in, ratings out. No model, no network."""
 
     def __init__(self, store: CaseStore, case_id: str, source: str) -> None:
         super().__init__()
         self.id = "extract"
-        self.store = store
-        self.case_id = case_id
-        self.source = source
+        self.store, self.case_id, self.source = store, case_id, source
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
-        if _resume_answer(task) is not None:
-            # Resuming: extraction already happened in the earlier process.
-            return _node_result(self.id, "extraction restored from case file")
-
         text = read_document(self.source)
         extraction = parse(text)
+        # The caller opens the case (recording the classifier); extraction
+        # starts its facts and trace afresh.
+        case = self.store.load(self.case_id)
         trace = Trace()
         if not extraction.ok:
-            trace.add(
-                Actor.DETERMINISTIC,
-                "Extraction FAILED",
-                extraction.unparsed_reason or "no ratings found",
-                value="cannot proceed",
-            )
-            case = Case(self.case_id, str(self.source), status="unparsed")
+            trace.add(Actor.DETERMINISTIC, "Extraction FAILED",
+                      extraction.unparsed_reason or "no ratings found", value="cannot proceed")
+            case.status = "unparsed"
             case.store_trace(trace)
             self.store.save(case)
-            return _node_result(self.id, f"extraction failed: {extraction.unparsed_reason}", Status.FAILED)
+            return _done(Status.FAILED)
 
-        case = Case(
-            case_id=self.case_id,
-            source_path=str(self.source),
-            stated_combined=extraction.stated_combined,
-            ratings=[
-                {
-                    "condition": r.condition,
-                    "percent": r.percent,
-                    "laterality": r.laterality,
-                    "extremity_group": r.extremity_group,
-                    "source_line": r.source_line,
-                    "source_line_number": r.source_line_number,
-                }
-                for r in extraction.ratings
-            ],
-        )
+        case.stated_combined = extraction.stated_combined
+        case.ratings = [
+            {
+                "condition": r.condition,
+                "percent": r.percent,
+                "extremity_group": r.extremity_group,
+                "source_line": r.source_line,
+                "source_line_number": r.source_line_number,
+            }
+            for r in extraction.ratings
+        ]
         trace.add(
             Actor.DETERMINISTIC,
             "Stated combined evaluation",
@@ -184,9 +165,10 @@ class IngestExtractNode(MultiAgentBase):
             evidence="combined evaluation statement",
             rule="38 CFR 4.25 (value under review)",
         )
+        case.status = "extracted"
         case.store_trace(trace)
         self.store.save(case)
-        return _node_result(self.id, f"extracted {len(extraction.ratings)} ratings")
+        return _done()
 
 
 class ClassifyNode(MultiAgentBase):
@@ -195,187 +177,210 @@ class ClassifyNode(MultiAgentBase):
     def __init__(self, store: CaseStore, case_id: str, agent_factory: AgentFactory | None) -> None:
         super().__init__()
         self.id = "classify"
-        self.store = store
-        self.case_id = case_id
-        self.agent_factory = agent_factory
+        self.store, self.case_id, self.agent_factory = store, case_id, agent_factory
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
-        if _resume_answer(task) is not None:
-            return _node_result(self.id, "classifications restored from case file")
-
         case = self.store.load(self.case_id)
-        from recheck.extract.deterministic import ExtractedRating
-
         ratings = [ExtractedRating(**r) for r in case.ratings]
         trace = case.load_trace()
-        decisions = classify(ratings, trace, self.agent_factory)
+        decisions = await classify_async(ratings, trace, self.agent_factory)
         case.store_decisions(decisions)
         case.store_trace(trace)
+        case.status = "classified"
         self.store.save(case)
-        ai_count = sum(1 for d in decisions if d.decided_by is Actor.AI)
-        return _node_result(self.id, f"classified {len(decisions)} conditions ({ai_count} by model)")
+        return _done()
 
 
 class AssessNode(MultiAgentBase):
-    """DETERMINISTIC gatekeeper. Raises the interrupt; validates the answer.
+    """DETERMINISTIC gatekeeper: decides whether a human is needed, validates answers.
 
-    This node decides whether the case is safe to compute. It is the only
-    place a human is asked anything, and the only thing it asks for is a
-    side. It never asks a human for a percentage or a combined value.
+    A human is interrupted only when enumerating every possible answer to the
+    unknown facts yields more than one final degree. A human is asked only
+    for the facts that are unknown - never for a fact the letter states, and
+    never for a number.
     """
 
     def __init__(self, store: CaseStore, case_id: str) -> None:
         super().__init__()
         self.id = "assess"
-        self.store = store
-        self.case_id = case_id
+        self.store, self.case_id = store, case_id
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
         case = self.store.load(self.case_id)
         decisions = case.load_decisions()
         trace = case.load_trace()
-        answer = _resume_answer(task)
+        response = _interrupt_response(task)
 
-        if answer is None:
-            unresolved = [(i, d) for i, d in enumerate(decisions) if d.needs_human]
-            if not unresolved:
-                trace.add(
-                    Actor.DETERMINISTIC,
-                    "Ambiguity assessment",
-                    "every condition resolved without human input; no interrupt raised",
-                    value="clear to compute",
-                )
-                case.store_trace(trace)
-                self.store.save(case)
-                return _node_result(self.id, "no human input required")
+        if response is None:
+            return self._first_pass(case, decisions, trace)
 
-            trace.add(
-                Actor.DETERMINISTIC,
-                "Ambiguity assessment",
-                "; ".join(f"[{i}] {d.condition}: {d.reason}" for i, d in unresolved),
-                value=f"{len(unresolved)} condition(s) need a human",
-            )
-            case.store_trace(trace)
-            case.status = "awaiting_human"
-            self.store.save(case)
-            return MultiAgentResult(
-                status=Status.INTERRUPTED,
-                results={},
-                interrupts=[
-                    Interrupt(
-                        id=INTERRUPT_ID,
-                        name=INTERRUPT_NAME,
-                        reason={
-                            "question": "Which side is each of these conditions on?",
-                            "conditions": [
-                                {"index": i, "condition": d.condition, "percent": d.percent,
-                                 "extremity_group": d.extremity_group, "why": d.reason}
-                                for i, d in unresolved
-                            ],
-                            "accepted_values": list(VALID_SIDES),
-                            "note": "Recheck asks only for laterality. It never asks a human "
-                                    "for a percentage or a combined evaluation.",
-                        },
-                    )
-                ],
-            )
-
-        # Resuming with a human answer. Validate before it touches anything.
-        sides, problems = parse_sides(answer, decisions)
+        answers, problems = parse_answers(response, decisions)
         if problems:
-            trace.add(
-                Actor.DETERMINISTIC,
-                "Human answer REJECTED",
-                "; ".join(problems),
-                value="cannot proceed",
-            )
+            trace.add(Actor.DETERMINISTIC, "Human answer REJECTED", "; ".join(problems),
+                      value="question still open")
+            case.status = "awaiting_human"
+            case.rejected_answer = "; ".join(problems)
             case.store_trace(trace)
-            case.status = "invalid_answer"
             self.store.save(case)
-            return _node_result(self.id, "invalid human answer: " + "; ".join(problems), Status.FAILED)
+            # The question stays open: re-raise the same interrupt so the case
+            # can be answered again, rather than stranding it.
+            return self._interrupt(case, decisions, assess_materiality(decisions))
 
-        for index, side in sides.items():
-            decision = decisions[index]
+        for index, (group, side) in sorted(answers.items()):
+            d = decisions[index]
+            parts = []
+            if d.group_missing and group != "unknown":
+                d.extremity_group, d.group_by = group, Actor.HUMAN
+                d.confidence = None
+                parts.append(f"extremity group {group}")
+            if d.side_missing and side != "unknown":
+                d.laterality, d.side_by = side, Actor.HUMAN
+                parts.append(f"side {side}")
             trace.add(
                 Actor.HUMAN,
-                "Laterality confirmed",
-                f"{decision.condition}",
-                value=side,
-                evidence="human confirmation, not present in the document",
+                "Answer",
+                f"[{index}] {d.condition}",
+                value=", ".join(parts) if parts else "does not know",
+                evidence="supplied by the reviewer; not stated in the letter",
             )
-            decisions[index] = Decision(
-                condition=decision.condition,
-                percent=decision.percent,
-                extremity_group=decision.extremity_group,
-                laterality=side,
-                decided_by=Actor.HUMAN,
-                confidence=None,
-                needs_human=(side == "unknown"),
-                reason=None if side != "unknown" else "human could not determine the side",
-                evidence=decision.evidence,
-            )
-        case.human_answers = {str(k): v for k, v in sides.items()}
+        case.human_answers = {str(k): "-".join(v) for k, v in sorted(answers.items())}
+        case.rejected_answer = None
         case.store_decisions(decisions)
+        return self._settle(case, decisions, trace, after_answers=True)
+
+    def _first_pass(self, case: Case, decisions: list[Decision], trace: Trace) -> MultiAgentResult:
+        return self._settle(case, decisions, trace, after_answers=False)
+
+    def _settle(self, case: Case, decisions: list[Decision], trace: Trace, *, after_answers: bool) -> MultiAgentResult:
+        m = assess_materiality(decisions)
+        unknown = [(i, decisions[i]) for i in m.unknown]
+        both = [d for d in decisions if d.laterality == "both" and d.extremity_group != "none"]
+
+        if not unknown and not both:
+            trace.add(Actor.DETERMINISTIC, "Assessment",
+                      "every fact 4.25 and 4.26 need is established", value="ready to compute")
+            return self._ready(case, trace)
+
+        if m.settled:
+            listed = "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)}" for i, d in unknown)
+            detail = (
+                (f"unknown: {listed}. " if listed else "")
+                + (f"a single evaluation names both sides ({both[0].condition}). " if both else "")
+                + f"Every one of {len(m.by_answers) * (2 if both else 1)} possible combinations gives "
+                f"{m.possible[0]}%, so no answer could change the rating."
+            )
+            trace.add(Actor.DETERMINISTIC, "Unknown facts cannot change the result", detail,
+                      value="no question needed", rule="38 CFR 4.25, 4.26")
+            case.immaterial_unknowns = [i for i, _ in unknown]
+            return self._ready(case, trace)
+
+        if m.answers_matter and not after_answers:
+            case.status = "awaiting_human"
+            case.possible_degrees = list(m.possible)
+            trace.add(
+                Actor.DETERMINISTIC,
+                "Question for a reviewer",
+                "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)} not established" for i, d in unknown)
+                + f". The answers lead to different ratings: {_or(m.possible)}.",
+                value=f"{len(unknown)} fact(s) needed",
+            )
+            case.store_trace(trace)
+            self.store.save(case)
+            return self._interrupt(case, decisions, m)
+
+        # Either the reviewer has answered and something that matters is still
+        # unknown, or the only open question is one Recheck does not decide.
+        reason = (
+            "a single evaluation names both sides, and whether 4.26 includes it changes the result"
+            if m.reading_matters and not m.answers_matter
+            else "facts that change the result are still not established"
+        )
+        trace.add(Actor.DETERMINISTIC, "Result UNDETERMINED",
+                  f"{reason}. Possible final degrees: {_or(m.possible)}.", value="not computed")
+        case.status = "undetermined"
+        case.undetermined_reason = reason
+        case.possible_degrees = list(m.possible)
         case.store_trace(trace)
-        case.status = "resumed"
         self.store.save(case)
-        return _node_result(self.id, f"human resolved {len(sides)} condition(s)")
+        return _done()
+
+    def _ready(self, case: Case, trace: Trace) -> MultiAgentResult:
+        case.status = "ready"
+        case.store_trace(trace)
+        self.store.save(case)
+        return _done()
+
+    def _interrupt(self, case: Case, decisions: list[Decision], m: Materiality) -> MultiAgentResult:
+        conditions = []
+        for i in m.unknown:
+            d = decisions[i]
+            outcomes = m.outcomes_for(i) if len(m.unknown) == 1 else {}
+            conditions.append({
+                "index": i,
+                "condition": d.condition,
+                "percent": d.percent,
+                "evidence": d.evidence,
+                "missing": list(d.missing),
+                "known": {k: v for k, v in (("extremity group", d.extremity_group), ("side", d.laterality))
+                          if v != "unknown"},
+                "accepted": accepted_answers(d),
+                "why": d.note or "not stated in the letter",
+                "outcomes": {"-".join(k): list(v) for k, v in outcomes.items()},
+            })
+        return MultiAgentResult(
+            status=Status.INTERRUPTED,
+            interrupts=[
+                Interrupt(
+                    id=interrupt_id(case.case_id),
+                    name="establish_facts",
+                    reason={
+                        "case": case.case_id,
+                        "question": "Recheck needs facts the letter does not establish.",
+                        "conditions": conditions,
+                        "possible_results": list(m.possible),
+                        "stated": case.stated_combined,
+                        "rejected": case.rejected_answer,
+                        "note": "Answer with facts only - a side or an extremity group. "
+                                "Recheck never asks for a percentage or a combined evaluation.",
+                    },
+                )
+            ],
+        )
 
 
-class ComputeReportNode(MultiAgentBase):
+class ComputeNode(MultiAgentBase):
     """DETERMINISTIC. 38 CFR 4.25 / 4.26 and the comparison. No model, ever."""
 
     def __init__(self, store: CaseStore, case_id: str) -> None:
         super().__init__()
         self.id = "compute"
-        self.store = store
-        self.case_id = case_id
+        self.store, self.case_id = store, case_id
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
-        from recheck.cfr.rating import evaluate
-
         case = self.store.load(self.case_id)
         decisions = case.load_decisions()
         trace = case.load_trace()
+        evaluation = evaluate_established(decisions)
 
-        percents = [d.percent for d in decisions]
-        pair = choose_bilateral_pair(decisions)
-        if pair is not None:
-            i, j = pair
+        if evaluation.bilateral_members:
             trace.add(
                 Actor.DETERMINISTIC,
-                "Bilateral pair identified",
-                f"{decisions[i].condition} ({decisions[i].laterality}) and "
-                f"{decisions[j].condition} ({decisions[j].laterality}): same extremity group, "
-                f"opposite sides, both compensable",
-                value=f"{decisions[i].percent}% + {decisions[j].percent}%",
-                rule="38 CFR 4.26(a), 4.26(c)",
+                "Bilateral factor applies",
+                "compensable disabilities on both the left and right side of "
+                + " and ".join(sorted({m.extremity + " extremities" for m in evaluation.bilateral_members}))
+                + ": " + ", ".join(m.label() for m in evaluation.bilateral_members),
+                value=f"{len(evaluation.bilateral_members)} disabilities in the factor",
+                rule="38 CFR 4.26(a)-(c)",
             )
-            evaluation = evaluate(percents, bilateral_pair=[decisions[i].percent, decisions[j].percent])
-        else:
-            trace.add(
-                Actor.DETERMINISTIC,
-                "Bilateral factor not applied",
-                "no pair of compensable conditions in the same extremity group on opposite sides "
-                "was established",
-                value="4.26 not applicable",
-                rule="38 CFR 4.26(c)",
-            )
-            evaluation = evaluate(percents)
-
         for step in evaluation.steps:
-            trace.add(
-                Actor.DETERMINISTIC,
-                step.detail.split(":")[0][:60],
-                step.detail,
-                value=step.running_after,
-                rule=step.rule,
-            )
+            trace.add(Actor.DETERMINISTIC, "Arithmetic", step.detail, value=step.running_after, rule=step.rule)
+        for note in evaluation.notes:
+            trace.add(Actor.DETERMINISTIC, "Note", note, rule="38 CFR 4.26")
         trace.add(
             Actor.DETERMINISTIC,
             "Final degree of disability",
-            "combined value converted to the nearest degree divisible by 10; values ending in 5 "
-            "are adjusted upward",
+            f"combined value {evaluation.combined_value} converted to the nearest degree divisible "
+            f"by 10; values ending in 5 are adjusted upward",
             value=f"{evaluation.final_degree}%",
             rule="38 CFR 4.25(a)",
         )
@@ -384,144 +389,207 @@ class ComputeReportNode(MultiAgentBase):
         case.bilateral_applied = evaluation.bilateral_applied
         case.bilateral_note = " ".join(evaluation.notes) or None
         case.alternative_degree = evaluation.alternative_final_degree
-        case.store_trace(trace)
+        case.possible_degrees = [evaluation.final_degree]
         case.status = "complete"
+        case.store_trace(trace)
         self.store.save(case)
-        return _node_result(self.id, f"recomputed {evaluation.final_degree}%")
+        return _done()
 
 
 # ---------------------------------------------------------------------------
-# Validation of the human answer
+# Human answers
 # ---------------------------------------------------------------------------
 
-def parse_sides(
-    answer: str, decisions: Sequence[Decision]
-) -> tuple[dict[int, str], list[str]]:
-    """Parse and validate a human laterality answer.
+def accepted_answers(decision: Decision) -> list[str]:
+    """The answers a reviewer may give for one condition - facts, never numbers."""
+    if decision.group_missing and decision.side_missing:
+        return ["upper-left", "upper-right", "lower-left", "lower-right", "upper", "lower", "none", "unknown"]
+    if decision.group_missing:
+        return ["upper", "lower", "none", "unknown"]
+    if decision.side_missing:
+        return ["left", "right", "unknown"]
+    return []
 
-    Accepts "0=left,1=right". Every clause is checked against the case: the
-    index must exist, it must be a condition that actually asked for input,
-    and the value must be a permitted side. A human cannot supply a
-    percentage here because the grammar has no place for one.
+
+def _interpret(value: str, decision: Decision) -> tuple[str, str]:
+    """Map an accepted answer onto (group, side), keeping established facts."""
+    group = decision.extremity_group if not decision.group_missing else "unknown"
+    side = decision.laterality if not decision.side_missing else "unknown"
+    if value == "unknown":
+        return group, side
+    if value in ("left", "right"):
+        return group, value
+    if value == "none":
+        return "none", side
+    if "-" in value:
+        g, s = value.split("-", 1)
+        return g, s
+    return value, side  # "upper" / "lower"
+
+
+def parse_answers(
+    response: Any, decisions: Sequence[Decision]
+) -> tuple[dict[int, tuple[str, str]], list[str]]:
+    """Validate a reviewer's answers. Returns ({index: (group, side)}, problems).
+
+    Accepts a mapping {"2": "left"} or the command-line form "2=left,3=upper-right".
+    Every answer is checked against the case: the condition must exist, must
+    have had something unknown, the value must be one of the facts that
+    condition could take, and no condition may be answered twice. A fact the
+    letter states cannot be overridden, because it is never asked. Numbers
+    have no place in the grammar.
     """
-    sides: dict[int, str] = {}
     problems: list[str] = []
-    clauses = [c.strip() for c in answer.replace(";", ",").split(",") if c.strip()]
-    if not clauses:
+    pairs: list[tuple[str, str]] = []
+    if isinstance(response, dict):
+        pairs = [(str(k).strip(), str(v).strip().lower()) for k, v in response.items()]
+    elif isinstance(response, str):
+        clauses = [c.strip() for c in response.replace(";", ",").split(",") if c.strip()]
+        for clause in clauses:
+            if "=" not in clause:
+                problems.append(f"cannot parse {clause!r}; expected index=answer")
+                continue
+            raw_index, raw_value = clause.split("=", 1)
+            pairs.append((raw_index.strip(), raw_value.strip().lower()))
+    else:
+        return {}, ["answer must be text such as 2=left or a mapping of index to answer"]
+    if not pairs and not problems:
         return {}, ["empty answer"]
 
-    for clause in clauses:
-        if "=" not in clause:
-            problems.append(f"cannot parse {clause!r}; expected index=side")
-            continue
-        raw_index, raw_side = clause.split("=", 1)
-        raw_index, raw_side = raw_index.strip(), raw_side.strip().lower()
+    answers: dict[int, tuple[str, str]] = {}
+    for raw_index, raw_value in pairs:
         if not raw_index.isdigit():
             problems.append(f"{raw_index!r} is not a condition index")
             continue
         index = int(raw_index)
-        if index < 0 or index >= len(decisions):
+        if index >= len(decisions):
             problems.append(f"no condition at index {index}")
             continue
-        if not decisions[index].needs_human:
-            problems.append(f"condition {index} did not require human input")
+        decision = decisions[index]
+        allowed = accepted_answers(decision)
+        if not allowed:
+            stated = f"{decision.extremity_group}, side {decision.laterality}"
+            problems.append(f"condition {index} was not asked about; its facts are established ({stated})")
             continue
-        if raw_side not in VALID_SIDES:
-            problems.append(f"{raw_side!r} is not one of {VALID_SIDES}")
+        if index in answers:
+            problems.append(f"condition {index} answered more than once")
             continue
-        sides[index] = raw_side
+        if raw_value not in allowed:
+            problems.append(f"{raw_value!r} is not an accepted answer for condition {index} "
+                            f"(accepted: {', '.join(allowed)})")
+            continue
+        answers[index] = _interpret(raw_value, decision)
 
-    outstanding = [i for i, d in enumerate(decisions) if d.needs_human and i not in sides]
+    outstanding = [i for i, d in enumerate(decisions) if d.missing and i not in answers]
     if outstanding and not problems:
         problems.append(f"no answer supplied for condition(s) {outstanding}")
-    return sides, problems
+    return answers, problems
 
 
-def choose_bilateral_pair(decisions: Sequence[Decision]) -> tuple[int, int] | None:
-    """Deterministically select a 4.26 pair from resolved decisions.
-
-    Requirements, all from the regulation:
-      - both conditions in the same extremity group (4.26(a))
-      - opposite sides
-      - both compensable, i.e. at least 10 percent (4.26(c))
-      - neither still flagged for human review
-    """
-    eligible = [
-        (i, d)
-        for i, d in enumerate(decisions)
-        if d.extremity_group in ("upper", "lower") and d.safe_for_pairing and d.percent >= 10
-    ]
-    for a_index, a in eligible:
-        for b_index, b in eligible:
-            if b_index <= a_index:
-                continue
-            if a.extremity_group != b.extremity_group:
-                continue
-            if {a.laterality, b.laterality} == {"left", "right"}:
-                return a_index, b_index
+def _interrupt_response(task: Any) -> Any | None:
+    if isinstance(task, list):
+        for block in task:
+            if isinstance(block, dict) and "interruptResponse" in block:
+                return block["interruptResponse"].get("response")
     return None
 
 
+def _or(values: Sequence[int]) -> str:
+    items = [f"{v}%" for v in values]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
+
+
 # ---------------------------------------------------------------------------
-# The safety gate between assessment and arithmetic
+# Gates and observability
 # ---------------------------------------------------------------------------
 
-#: Case states in which arithmetic must NOT be produced.
-BLOCKED_STATES = ("unparsed", "invalid_answer", "awaiting_human")
+def _extraction_succeeded(state: Any, *, invocation_state: dict | None = None, **kwargs: Any) -> bool:
+    """Gate extract -> classify on the extract node's own result in GraphState."""
+    result = getattr(state, "results", {}).get("extract")
+    return result is not None and result.status == Status.COMPLETED
+
+
+COMPUTABLE_STATES = ("ready", "complete")
 
 
 def _safe_to_compute(store: CaseStore, case_id: str):
-    """Build the edge condition guarding `compute`.
+    """Gate assess -> compute on committed case state.
 
-    Fail-closed: any state that is not positively known to be computable
-    blocks the edge, including a case file that cannot be read.
+    Fail-closed: an unreadable case, an open question, an undetermined case,
+    a rejected answer - anything but a state in COMPUTABLE_STATES - blocks.
     """
 
     def condition(state: Any, *, invocation_state: dict | None = None, **kwargs: Any) -> bool:
         try:
-            case = store.load(case_id)
-        except Exception:
+            return store.load(case_id).status in COMPUTABLE_STATES
+        except Exception:  # noqa: BLE001 - unreadable means blocked
             return False
-        return case.status not in BLOCKED_STATES
 
     condition.__name__ = "safe_to_compute"
     return condition
 
 
-# ---------------------------------------------------------------------------
-# Graph assembly
-# ---------------------------------------------------------------------------
+class NodeTimeline(HookProvider):
+    """Records which process ran each graph node, via a Strands node hook.
 
-def build_graph(
-    store: CaseStore,
-    case_id: str,
-    source: str,
-    agent_factory: AgentFactory | None = None,
-):
-    """Assemble the graph.
+    The persisted timeline is how a report can show - rather than assert -
+    that a case was interrupted in one process and finished in another.
+    BeforeNodeCallEvent is used because Strands does not emit
+    AfterNodeCallEvent for a node that raised an interrupt.
+    """
 
-    The session manager is attached to the ORCHESTRATOR only. Attaching one
-    to each member node is not supported for multi-agent runs in this SDK
-    version.
+    def __init__(self, store: CaseStore, case_id: str) -> None:
+        self.store, self.case_id = store, case_id
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
+        registry.add_callback(BeforeNodeCallEvent, self._before)
+
+    def _before(self, event: BeforeNodeCallEvent) -> None:
+        try:
+            case = self.store.load(self.case_id)
+        except Exception:  # noqa: BLE001 - never let observability break a run
+            return
+        case.timeline.append({"node": event.node_id, "pid": os.getpid()})
+        self.store.save(case)
+
+
+def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "none") -> Case:
+    """Create the case a new audit writes into. Callers discard any old one first."""
+    case = Case(case_id, str(source), classifier=classifier, status="open")
+    store.save(case)
+    return case
+
+
+def build_graph(store: CaseStore, case_id: str, source: str, agent_factory: AgentFactory | None = None):
+    """Assemble the graph for one document.
+
+    FileSessionManager restores any persisted graph state - including an
+    outstanding interrupt - as the graph is built.
     """
     builder = GraphBuilder()
-    builder.add_node(IngestExtractNode(store, case_id, source), "extract")
+    builder.add_node(ExtractNode(store, case_id, source), "extract")
     builder.add_node(ClassifyNode(store, case_id, agent_factory), "classify")
     builder.add_node(AssessNode(store, case_id), "assess")
-    builder.add_node(ComputeReportNode(store, case_id), "compute")
-    builder.add_edge("extract", "classify")
+    builder.add_node(ComputeNode(store, case_id), "compute")
+    builder.add_edge("extract", "classify", condition=_extraction_succeeded)
     builder.add_edge("classify", "assess")
-    # CONDITIONAL EDGE - a safety gate, not decoration.
-    #
-    # Returning Status.FAILED from `assess` does NOT stop downstream nodes in
-    # this SDK version: a rejected human answer still reached `compute` and
-    # produced arithmetic. That is the worst possible failure for this
-    # product, so the gate is now part of the topology and is enforced by
-    # reading committed state from disk rather than by in-memory convention.
     builder.add_edge("assess", "compute", condition=_safe_to_compute(store, case_id))
     builder.set_entry_point("extract")
-    builder.set_max_node_executions(12)
+    builder.set_graph_id("recheck")
+    builder.set_hook_providers([NodeTimeline(store, case_id)])
     builder.set_session_manager(
         FileSessionManager(session_id=case_id, storage_dir=str(store.session_dir(case_id)))
     )
     return builder.build()
+
+
+def outstanding_interrupt(graph: Any) -> Interrupt | None:
+    """The interrupt a restored graph is waiting on, if any.
+
+    Read from the graph Strands restored from the session - not from a
+    file-exists check - so a case whose session was lost cannot be resumed.
+    """
+    state = getattr(graph, "_interrupt_state", None)
+    if state is None or not state.activated:
+        return None
+    return next(iter(state.interrupts.values()), None)

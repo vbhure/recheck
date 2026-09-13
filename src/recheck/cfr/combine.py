@@ -82,11 +82,16 @@ def combine(ratings: Iterable[int | Decimal]) -> int:
     return int(running)
 
 
-def bilateral_subtotal(pair: Sequence[int | Decimal]) -> int:
-    """Combine one bilateral pair and add the 4.26 factor.
+def bilateral_subtotal(ratings: Sequence[int | Decimal]) -> int:
+    """Combine the bilateral disabilities and add the 4.26 factor.
 
-    4.26: the paired ratings "will be combined as usual, and 10 percent of
-    this value will be added (i.e., not combined)".
+    4.26: "the ratings for the disabilities of the right and left sides will
+    be combined as usual, and 10 percent of this value will be added (i.e.,
+    not combined)". That is every such disability, not one pair of them: a
+    left knee, a left ankle and a right knee all enter the calculation, and
+    4.26(b) folds all four extremities into one subtotal when both arms and
+    both legs are affected. Which disabilities qualify is decided in
+    recheck.cfr.rating; this function only does the arithmetic.
 
     "Added, not combined" is arithmetic addition - treating it as another
     4.25 combination understates the result and is the most common way this
@@ -95,11 +100,16 @@ def bilateral_subtotal(pair: Sequence[int | Decimal]) -> int:
     The result is rounded to an integer. This is not an assumption: 4.26's
     own worked example combines 10 and 10 to 19, adds 10% (1.9) and states
     the order of severity as "60, 21 and 20" - i.e. 20.9 becomes 21.
+
+    Capped at 100. Adding 10% can carry a large subtotal past 100 (80 and 60
+    combine to 92; adding 9.2 gives 101), which no percentage of disability
+    can be. Anything combined with 100 stays 100, so the cap cannot change a
+    final degree - without it, a legitimate letter crashed Table I validation.
     """
-    if len(pair) != 2:
-        raise ValueError(f"a bilateral pair requires exactly 2 ratings, got {len(pair)}")
-    base = Decimal(combine(pair))
-    return _round_half_up(base + base * BILATERAL_FACTOR_PCT / ONE_HUNDRED)
+    if not ratings:
+        raise ValueError("the bilateral factor needs at least one disability")
+    base = Decimal(combine(ratings))
+    return min(100, _round_half_up(base + base * BILATERAL_FACTOR_PCT / ONE_HUNDRED))
 
 
 def final_degree(combined_value: int | Decimal) -> int:
@@ -108,8 +118,14 @@ def final_degree(combined_value: int | Decimal) -> int:
     4.25(a): "converted to the nearest number divisible by 10, and combined
     values ending in 5 will be adjusted upward."
 
-    This is the ONLY rounding-to-ten site in Recheck and is called only from
-    the report layer, never from inside the engine.
+    This is the ONLY rounding-to-ten site in Recheck. Intermediate values
+    are never converted; only a finished combined value is.
+
+    A combined value above 100 cannot exist (the bilateral subtotal is
+    capped), so one arriving here is a defect upstream and is refused loudly
+    rather than converted into an impossible "110%".
     """
+    if not Decimal(0) <= Decimal(combined_value) <= ONE_HUNDRED:
+        raise ValueError(f"combined value out of range 0-100: {combined_value}")
     scaled = (Decimal(combined_value) / Decimal(10)) + Decimal("0.5")
     return int(scaled.to_integral_value(rounding="ROUND_FLOOR")) * 10

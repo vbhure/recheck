@@ -12,10 +12,11 @@ Design constraints, all of them load-bearing:
   (the AWS credential chain, ANTHROPIC_API_KEY). Preflight reports only
   whether a credential could be RESOLVED - never a value, never a prefix.
 
-  ONE CALL PER LETTER. The model classifies a batch of condition names in a
-  single structured call. There is no agent loop, no tool use, and no
-  re-prompting: `limits={"turns": 1}` in recheck.classify bounds it, because
-  Strands otherwise retries a structured output that fails validation.
+  ONE CALL PER LETTER, BOUNDED. The model classifies a batch of condition
+  names in a single structured call, and only when the lexicon abstains on
+  something. `limits={"turns": 1}` in recheck.classify bounds retries (Strands
+  otherwise retries a structured output that fails validation), and a
+  wall-clock budget bounds time.
 
   MINIMAL PROMPT. Only condition names are sent. The letter, the
   percentages, the stated combined evaluation and the file number never
@@ -30,9 +31,6 @@ Design constraints, all of them load-bearing:
 from __future__ import annotations
 
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -71,10 +69,6 @@ class ProviderError(RuntimeError):
 
 class ProviderNotConfigured(ProviderError):
     """Configuration is absent or invalid. Raised before any network use."""
-
-
-class ProviderTimeout(ProviderError):
-    """The provider did not answer within the configured budget."""
 
 
 @dataclass(frozen=True)
@@ -233,12 +227,6 @@ def preflight(config: ProviderConfig) -> list[Check]:
             Check("credentials resolvable", True, "not applicable - local provider")
         )
 
-    checks.append(
-        Check("single-call contract", True, "one structured classification call per letter")
-    )
-    checks.append(
-        Check("prompt minimisation", True, "condition names only; no percentages, no letter text")
-    )
     return checks
 
 
@@ -276,36 +264,6 @@ def build_model(config: ProviderConfig) -> Any:
     raise ProviderNotConfigured(f"no constructor mapping for {config.provider!r}")
 
 
-class BoundedAgent:
-    """Wraps a Strands Agent with a wall-clock budget.
-
-    Strands bounds TURNS; this bounds TIME. A provider that accepts a
-    connection and then stalls would otherwise hang the run, which for a
-    tool people invoke from a terminal is indistinguishable from a crash.
-
-    On timeout the underlying invocation is signalled to cancel and
-    ProviderTimeout is raised. recheck.classify treats any exception the same
-    way: the affected conditions route to human review.
-    """
-
-    def __init__(self, agent: Any, timeout_s: float) -> None:
-        self._agent = agent
-        self._timeout_s = timeout_s
-
-    def __call__(self, prompt: str, **kwargs: Any) -> Any:
-        cancel = threading.Event()
-        kwargs.setdefault("cancel_signal", cancel)
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="recheck-model") as pool:
-            future = pool.submit(self._agent, prompt, **kwargs)
-            try:
-                return future.result(timeout=self._timeout_s)
-            except FutureTimeout as exc:
-                cancel.set()
-                raise ProviderTimeout(
-                    f"provider did not answer within {self._timeout_s:g}s"
-                ) from exc
-
-
 AgentFactory = Callable[[], Any]
 
 
@@ -313,7 +271,11 @@ def build_agent_factory(
     provider: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> AgentFactory:
-    """Return a factory producing a bounded, single-call classification agent.
+    """Return a factory producing the classification agent for this provider.
+
+    The factory carries `timeout_s`; recheck.classify enforces it as a
+    wall-clock budget around the one structured call (asyncio.wait_for plus
+    Strands' cancel_signal), and bounds turns with limits={"turns": 1}.
 
     Raises ProviderNotConfigured eagerly, before any run begins, so a
     misconfiguration surfaces immediately rather than mid-workflow.
@@ -328,17 +290,17 @@ def build_agent_factory(
             f"or use --scripted for a zero-cost run."
         )
 
-    def make() -> BoundedAgent:
+    def make() -> Any:
         from strands import Agent
 
         from recheck.classify import SYSTEM_PROMPT
 
-        agent = Agent(
+        return Agent(
             model=build_model(config),
             system_prompt=SYSTEM_PROMPT,
             callback_handler=None,  # framework chatter is not product output
         )
-        return BoundedAgent(agent, config.timeout_s)
 
     make.config = config  # type: ignore[attr-defined]
+    make.timeout_s = config.timeout_s  # type: ignore[attr-defined]
     return make

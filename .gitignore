@@ -8,8 +8,6 @@ out/
 *.wav
 *.pcm
 .refs/
-spikes/.strands/
-spikes/gstate.json
 letter.pdf
 out/
 runs/
