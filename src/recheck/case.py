@@ -15,15 +15,18 @@ framework is deliberate: a case remains readable without Strands installed,
 and the provider stays replaceable. The case file is plain JSON on purpose - a
 reviewer can open it.
 
-Status moves through an allowlist, and every graph edge checks it:
+Status is one of STATUSES; the compute gate and the compute node accept only
+"ready" and "complete":
 
   open -> extracted -> classified -> ready -> complete
-                          \\-> awaiting_human -> ready | undetermined
+                          |      \\-> awaiting_human -> awaiting_human (follow-up) | ready | undetermined
+                          \\-> undetermined (too many possibilities to try)
   unparsed, undetermined: terminal, nothing computed
 
-No PII is stored, because none is extracted. The letters are synthetic and
-the only values retained are condition names, percentages, line numbers and
-decisions.
+No PII is extracted by design. What is kept is the letter's path and
+SHA-256, condition names, percentages, evidence lines and line numbers, and
+decisions. Names and evidence lines are the letter's own text, so treat a
+store built from real letters as sensitive.
 
 The case file is also UNTRUSTED INPUT. Anyone who can write to the store can
 edit it, and a red team did: a "complete" status with a made-up

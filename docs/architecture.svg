@@ -110,7 +110,7 @@
   <!-- ===== model boundary (attached to classify) ===== -->
   <rect x="28" y="214" width="324" height="269" rx="8" fill="#fffaf0" stroke="#b26a00" stroke-width="1.5" stroke-dasharray="6 4"/>
   <text x="42" y="236" font-size="14" font-weight="700" fill="#1a1f27">Model output is untrusted:</text>
-  <text x="42" y="256" font-size="13" fill="#2b3340">• strict schema (group + confidence<tspan x="54" dy="17">only, extra fields rejected)</tspan><tspan x="42" dy="17">• confidence floor 0.75</tspan><tspan x="42" dy="17">• 'none' vetoed for limb vocabulary</tspan><tspan x="42" dy="17">• one call with turns=1</tspan><tspan x="42" dy="17">• wall-clock timeout</tspan></text>
+  <text x="42" y="256" font-size="13" fill="#2b3340">• strict schema (name, group + confidence<tspan x="54" dy="17">only; extra fields rejected)</tspan><tspan x="42" dy="17">• confidence floor 0.75</tspan><tspan x="42" dy="17">• 'none' vetoed for limb or nerve words</tspan><tspan x="42" dy="17">• one call with turns=1</tspan><tspan x="42" dy="17">• wall-clock timeout</tspan></text>
   <text x="42" y="361" font-size="13" font-weight="700" fill="#8a5200">Any failure → group unknown.</text>
   <rect x="38" y="374" width="304" height="101" rx="6" fill="#ffffff" stroke="#b26a00" stroke-width="1.2"/>
   <text x="50" y="394" font-size="13" font-weight="700" fill="#1a1f27">provider seam</text>
@@ -119,8 +119,8 @@
   <!-- ===== UNDETERMINED ===== -->
   <rect x="28" y="532" width="324" height="88" rx="8" fill="#ffffff" stroke="#5b6472" stroke-width="1.6"/>
   <text x="42" y="554" font-size="14" font-weight="700" fill="#1a1f27">UNDETERMINED</text>
-  <text x="42" y="574" font-size="13" fill="#2b3340">not computed; shows possible ratings</text>
-  <text x="42" y="591" font-size="13" font-style="italic" fill="#4a5260">when facts that change the result<tspan x="42" dy="17">stay unknown</tspan></text>
+  <text x="42" y="574" font-size="13" fill="#2b3340">not computed and never guessed</text>
+  <text x="42" y="591" font-size="13" font-style="italic" fill="#4a5260">when facts that change the result<tspan x="42" dy="17">stay unknown, or are too many to try</tspan></text>
 
   <!-- ===== NodeTimeline hook ===== -->
   <rect x="856" y="138" width="316" height="69" rx="8" fill="#ffffff" stroke="#8a929e" stroke-width="1.4" stroke-dasharray="4 3"/>

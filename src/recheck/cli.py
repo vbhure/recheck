@@ -650,14 +650,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--store", default=DEFAULT_STORE, help="case store directory (default: runs)")
     parser.add_argument("--debug", action="store_true",
                         help="show framework logging (Strands node/graph internals), normally suppressed; "
-                             "credential-bearing HTTP and signing logs stay suppressed")
+                             "known HTTP and signing loggers stay quiet and credential-shaped text is masked, "
+                             "but treat a --debug log as sensitive")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_model_flags(p):
         p.add_argument("--scripted", action="store_true",
                        help="replay AI classifications from a fixture: no network, no cost, real Strands code path")
         p.add_argument("--classifications", default=None, help="JSON fixture for --scripted")
-        p.add_argument("--model", default=None, help="live provider id (bedrock, anthropic, ollama)")
+        p.add_argument("--model", default=None,
+                       help="live provider id (bedrock, anthropic, ollama); ignored with --scripted")
         p.add_argument("--fresh", action="store_true", help="discard any existing case and audit again")
 
     audit = sub.add_parser("audit", help="audit one decision letter")
@@ -667,7 +669,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_flags(audit)
     audit.set_defaults(func=cmd_audit)
 
-    resume = sub.add_parser("resume", help="answer a case's question, in a new process")
+    resume = sub.add_parser("resume", help="answer a case's question, or finish a case whose answers are on file "
+                                           "(in a new process)")
     resume.add_argument("--case", required=True)
     resume.add_argument("--answer", default=None,
                         help='facts only, e.g. "2=left,3=right" or "4=upper-left". Omit it to finish a case '

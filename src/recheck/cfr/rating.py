@@ -23,8 +23,10 @@ from the eCFR source cited in combine.py):
   most favourable      when leaving "one or more bilateral disabilities" out
                        of the factor gives a higher combined evaluation, they
                        are removed and combined separately (4.26(d)). Every
-                       such removal is tried; the regulation does not limit
-                       it to all-or-nothing.
+                       such removal is tried (the regulation does not limit
+                       it to all-or-nothing), for up to MAX_BILATERAL_MEMBERS
+                       disabilities in the factor; more is refused, and the
+                       case is reported UNDETERMINED.
 
 Paired skeletal muscles are not modelled: Recheck classifies conditions into
 upper and lower extremities only.

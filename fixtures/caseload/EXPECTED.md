@@ -173,6 +173,7 @@ gives (10, 10 -> 19 + 1.9 = 20.9 -> 21; 50, 21, 10 -> 60.5 -> 61 -> 64.9 ->
 
 **Expected: complete, 60%, potential discrepancy (lower than stated).**
 
+<!-- (viii) was retired with an earlier generator; the numbering is kept so the test keys stay stable. -->
 ## (ix) case_014 - clinical names with no side stated
 
 | evaluation | % | code |

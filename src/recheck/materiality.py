@@ -8,7 +8,8 @@ immaterial, and asking it would waste the one resource the product exists to
 protect: the reviewer's attention.
 
 So before any interrupt, Recheck enumerates every combination of possible
-answers to the unknown facts, runs each through the same verified 4.25/4.26
+answers to the unknown facts (up to MAX_COMPLETIONS, within MAX_SEARCH_WORK;
+past either the case is UNDETERMINED, never sampled), runs each through the same verified 4.25/4.26
 engine that produces the reported figure, and asks a human only if the
 answers lead to different final degrees. The question then carries its own
 stakes: the ratings the answers lead to.

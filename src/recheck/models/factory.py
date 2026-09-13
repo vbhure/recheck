@@ -7,10 +7,10 @@ verification route.
 
 Design constraints, all of them load-bearing:
 
-  SECRETS ARE NOT OURS. Recheck never reads, stores, logs or prints a
-  credential. Each provider resolves its own via its own standard mechanism
-  (the AWS credential chain, ANTHROPIC_API_KEY). Preflight reports only
-  whether a credential could be RESOLVED - never a value, never a prefix.
+  SECRETS ARE NOT OURS. Recheck never stores, logs or prints a credential.
+  Each provider resolves its own via its own standard mechanism (the AWS
+  credential chain, ANTHROPIC_API_KEY). Preflight checks only whether a
+  credential is set or could be RESOLVED - never a value, never a prefix.
 
   ONE CALL PER LETTER, BOUNDED. The model classifies a batch of condition
   names in a single structured call, and only when the lexicon abstains on
@@ -18,14 +18,16 @@ Design constraints, all of them load-bearing:
   otherwise retries a structured output that fails validation), and a
   wall-clock budget bounds time.
 
-  MINIMAL PROMPT. Only condition names are sent. The letter, the
-  percentages, the stated combined evaluation and the file number never
-  leave the machine - they are not needed for the classification task, so
-  they are not transmitted.
+  MINIMAL PROMPT. Only condition names extracted from the decision section
+  are sent. A name carrying a percentage, a label, a date or a long number is
+  withheld (recheck.classify). The percentages, the stated combined
+  evaluation and the file number are not needed for the classification task,
+  so they are not transmitted.
 
   FAILURE IS UNIFORM. Timeout, API error, unavailable provider, malformed
   output and unsupported content all produce the same outcome: the affected
-  conditions route to human review. Nothing is fabricated or substituted.
+  conditions stay UNKNOWN, and a reviewer is asked only if that could change
+  the rating. Nothing is fabricated or substituted.
 
   PREFLIGHT SHOWS WHERE THE CALL GOES. A URL Recheck prints shows the host
   it parses to, with any user:password replaced; a URL that does not parse

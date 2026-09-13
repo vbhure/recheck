@@ -38,7 +38,7 @@ For each letter, unattended:
 1. **Reads the evaluations** — percentages, the stated combined rating, and the line each came from. *(deterministic)*
 2. **Works out which disabilities are of an arm or a leg.** The rating schedule's own anatomy (knee, sciatic nerve, humerus, pes planus…) is recognised by a deterministic lexicon. Clinical and eponymous names outside that vocabulary ("cubital tunnel syndrome", "De Quervain's tenosynovitis") go to a model in **one** structured call per letter. *(AI only for the gap)*
 3. **Reads which side each is on** from the letter's own words. The model is never asked. *(deterministic)*
-4. **Decides whether anything unknown matters.** If the letter omits a fact, Recheck runs every possible answer through the rating engine. If they all give the same rating, nobody is asked. *(deterministic)*
+4. **Decides whether anything unknown matters.** If the letter omits a fact, Recheck runs every possible answer through the rating engine. If they all give the same rating, nobody is asked. If there are too many possibilities to try them all, the letter is UNDETERMINED rather than guessed. *(deterministic)*
 5. **Asks a person only when an answer would change the rating** — a side or an extremity group, never a number — and shows the ratings the answers lead to. The question is persisted and the process exits; the representative answers later, from any process. *(human)*
 6. **Applies 4.26 and 4.25** and compares with the letter. *(deterministic)*
 
@@ -68,6 +68,7 @@ CASELOAD TRIAGE  -  24 document(s)
        recheck resume --case case_019 --answer "2=<upper|lower|none|unknown>"
 
   UNDETERMINED - not computed                                            0
+
   COULD NOT PROCEED                                                      0
 
 24 documents: 13 no discrepancy, 8 to review, 3 waiting on an answer, 0 undetermined, 0 could not proceed
@@ -77,7 +78,7 @@ extremity groups: 73 lexicon, 8 AI, 0 reviewer, 1 unknown.  sides read from the 
 
 The letters and their mix are synthetic and chosen by `tools/make_caseload.py`; the counts show the routing, not a real-world error rate.
 
-A difference is reported as **POTENTIAL DISCREPANCY — HUMAN REVIEW RECOMMENDED**, never as "VA is wrong". A result that depends on a fact nobody established is **UNDETERMINED**, with the ratings it could be — never a guess, and never "no discrepancy".
+A difference is reported as **POTENTIAL DISCREPANCY — HUMAN REVIEW RECOMMENDED**, never as "VA is wrong". A result that depends on a fact nobody established is **UNDETERMINED**, with the ratings it could be when they can all be tried — never a guess, and never "no discrepancy".
 
 ## Why this is an agent and not a calculator
 
@@ -92,12 +93,12 @@ Rating calculators exist. What a representative lacks is something that works th
 
 | Fact or step | Decided by | Guard |
 |---|---|---|
-| Percentages, stated combined rating, evidence lines | deterministic parser | refuses a letter it cannot read, including a numbered list with a gap |
+| Percentages, stated combined rating, evidence lines | deterministic parser | refuses rather than reading part of a letter: a percentage in the decision section it cannot tie to a rating or the combined statement, a numbered list with a gap or a wrapped row, a condition rated twice, two different current combined figures, a rating after a mid-list heading, a value over 100%, a condition name carrying letterhead or salutation text |
 | Extremity group, rating-schedule vocabulary | deterministic lexicon | abstains rather than guessing; 0 wrong assertions on both measured name sets |
-| Extremity group, other names | **AI** — one Strands Agent structured-output call per letter | schema has only a group and a confidence (no side, number or free text; extra fields rejected); confidence floor 0.75; "none" vetoed for limb or nerve vocabulary; `turns=1`; wall-clock timeout. Any failure leaves the group **unknown** |
+| Extremity group, other names | **AI** — one Strands Agent structured-output call per letter | strict schema: the name echoed back, a group and a confidence only (no side, number or free text). Extra fields, wrong types, a second answer or a repeated key discard the output. Confidence floor 0.75. "none" vetoed for limb or nerve vocabulary and for letters outside Latin-1. `turns=1`. Wall-clock timeout, with the call on its own thread. At most 40 names per call; a name carrying a percentage, label, date or long number is not sent. Any failure leaves the group **unknown** |
 | Side (left / right / both) | deterministic, from the letter's words | handedness and linked conditions ("secondary to right knee") are not the rated side |
-| Whether a person is needed | deterministic materiality check | every possible answer run through the engine |
-| A missing side or group | **human** reviewer | asked only when it changes the rating; facts only; a stated fact cannot be overridden; a rejected answer re-opens the question |
+| Whether a person is needed | deterministic materiality check | every possible answer run through the engine, up to 4,096 combinations within a fixed work budget; beyond that the result is UNDETERMINED, never sampled |
+| A missing side or group | **human** reviewer | asked only when it changes the rating (never about a 0% evaluation, which 4.26(c) keeps out of the factor); facts only; a stated fact cannot be overridden; a rejected answer re-opens the question; a partial answer ("lower") brings a follow-up for what is still missing |
 | 4.26 bilateral factor, 4.25 Table I, final degree | deterministic engine | 684/684 published Table I cells; the regulations' worked examples; published Board and Federal Register calculations; an independent reading of 4.26 |
 | Verdict wording | deterministic | never asserts error; a lower recomputation carries a caution |
 
@@ -132,7 +133,9 @@ recheck audit fixtures/letters/07_clinical_terms.txt --case b
 recheck show --case a --brief
 ```
 
-Exit codes: `0` finished · `2` waiting on an answer · `3` no result (unreadable, undetermined, rejected answer, a case busy in another process, a malformed command). `--fresh` re-audits an existing case.
+Exit codes: `0` finished · `2` waiting on an answer (including a follow-up after a partial answer) · `3` no result (unreadable, undetermined, rejected answer, a case that cannot be trusted or whose letter has changed, a case busy in another process, a malformed command). `show` exits `0` whenever it prints a case as it stands, whatever its status, and `3` when the case cannot be used as shown (corrupt, its letter changed, or its question lost). `--fresh` re-audits an existing case.
+
+A resume that fails part-way (a file another program holds, Ctrl+C) puts the case and its question back as they were. A case whose answers were accepted before its arithmetic ran is finished with `recheck resume --case ID` and no `--answer`. A sweep never deletes a case it cannot load unless you pass `--fresh`, and two letters whose file names differ only in letter case are refused rather than sharing one case.
 
 ### About `--scripted`
 
@@ -157,9 +160,9 @@ extract --(gate: extraction succeeded)--> classify --> assess --(gate: ready)-->
 | `GraphBuilder`, custom `MultiAgentBase` nodes | `graph.py` | a per-letter state machine that can stop at `assess` and continue elsewhere |
 | Conditional edges | `graph.py` | returning `FAILED` does not stop downstream nodes in this SDK version, so the gates are topology. They must also be *stable*: Strands re-evaluates them when it persists the session, and a condition that flips after its node runs empties the resume point |
 | `Interrupt` raised from a node | `graph.py: AssessNode` | the reviewer's question, with its possible outcomes in the interrupt reason |
-| `FileSessionManager` | `graph.py: build_graph` | the only store of graph state, restored as the graph is built; resume refuses when the session holds no open question |
+| `FileSessionManager` | `graph.py: build_graph` | the only store of graph state, restored as the graph is built. Resume refuses when the session holds no open question, and puts the session and case file back if the resumed run fails |
 | `HookProvider` on `BeforeNodeCallEvent` | `graph.py: NodeTimeline` | records which process ran each node, printed in every report |
-| `Agent.invoke_async(structured_output_model=…, limits={"turns": 1}, cancel_signal=…)` | `classify.py` | one bounded, validated classification call |
+| `Agent.stream_async(structured_output_model=…, limits={"turns": 1}, cancel_signal=…)`, on its own thread and event loop | `classify.py` | one bounded, validated classification call. The raw tool-use JSON is re-read, so a second answer or a repeated key discards the output, and an answer that arrives after the wall-clock budget is never used |
 | Custom `Model` | `models/scripted.py` | the zero-cost path through the real structured-output machinery |
 | Bedrock, Anthropic and Ollama model adapters | `models/factory.py` | a provider is an adapter at the edge, not a dependency |
 
@@ -167,27 +170,28 @@ Deliberately not used: tools, Swarm, A2A, multi-agent delegation, RAG, memory. T
 
 ### Is the AI necessary?
 
-Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon covers it — **113 of 138** schedule names resolved, 0 wrong (`python tools/gate_report.py`). On 66 letter-style clinical names written for this project (internal labels, disclosed), the schedule lexicon abstains on 35 of 47 arm and leg names with 0 wrong assertions — but an independent review showed a larger word list would cover much of that too. Recheck's position is a policy, not a proof: the schedule's vocabulary is deterministic; names outside it go to a classifier; and because the classifier is untrusted, a missing, wrong, uncertain or unavailable answer costs at most a question — never a wrong rating.
+Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon covers it — **113 of 138** schedule names resolved, 0 wrong (`python tools/gate_report.py`). On 66 letter-style clinical names written for this project (internal labels, disclosed), the schedule lexicon abstains on 35 of 47 arm and leg names with 0 wrong assertions — but an independent review showed a larger word list would cover much of that too. Recheck's position is a policy, not a proof: the schedule's vocabulary is deterministic; names outside it go to a classifier; and because the classifier is untrusted, a missing, invalid, contradictory, late, uncertain or unavailable answer costs at most a question, never a figure. A confident wrong group that passes the confidence floor and the veto *is* used. Every verdict that rests on one says so ("the AI classification of [i]"), and its triage row lists the AI groups.
 
 ## The rating engine
 
 `src/recheck/cfr/` has no model calls, no network and no I/O; all arithmetic is `Decimal`.
 
 - **Table I is rounded at every step.** 4.25(a) combines "the combined value, exactly as found in table I" with the next rating, and Table I cells are integers. The rounding mode was fitted against every published cell: half-up matches **684/684**; half-even misses 33; truncation 310. `python tools/fetch_cfr.py` re-extracts the table from the official eCFR API and diffs it with the committed fixture.
-- **4.26 applies to every bilateral disability,** not one pair: all compensable left and right ratings of a qualifying pair of extremities are combined, 10% of that value is *added*, and the result is one disability; both arms and both legs form one group (4.26(b)); 4.26(d) is an exhaustive search over leaving out "one or more" disabilities when that is more favourable. A single evaluation covering both extremities (bilateral pes planus) joins the group when another compensable rating of the same pair exists, per M21-1 V.iv.1.C.4.b; the case M21-1 leaves open is reported UNDETERMINED if it matters.
+- **4.26 applies to every bilateral disability,** not one pair: all compensable left and right ratings of a qualifying pair of extremities are combined, 10% of that value is *added*, and the result is one disability; both arms and both legs form one group (4.26(b)); 4.26(d) is an exhaustive search over leaving out "one or more" disabilities when that is more favourable, for up to 12 arm and leg ratings (a letter with more is UNDETERMINED). A single evaluation covering both extremities (bilateral pes planus) joins the group when another compensable rating of the same pair exists, per M21-1 V.iv.1.C.4.b; the case M21-1 leaves open is reported UNDETERMINED if it matters.
 - **Checked against numbers other people published:** the regulations' own worked examples; BVA Citation Nr 1312955 (five leg ratings in one group: 41 + 4.1 = 45, final 80%); BVA 0815809 (four extremities); BVA 1519449 (bilateral feet with both knees); VA's 4.26(d) example in 88 FR 22915 (93 and 21 → 90% under the prior rule; 100% now); and a deliberately naive, independently written reading of 4.26 over 3,360 rating combinations.
 
 ## Verification
 
-- **1,131 tests** — 686 of them the Table I file (every published cell), 445 behavioural. `pytest` runs them in about a minute.
-- **Regression tests for every defect found**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), and an adversarial red team. The defects and fixes are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
-- **Hand-derived expectations** for eight caseload letters that each pin one behaviour (three leg disabilities, four extremities, a linked clause, an immaterial unknown, a material question, an unlisted term, a lower recomputation) — [fixtures/caseload/EXPECTED.md](fixtures/caseload/EXPECTED.md).
-- **Clean clone:** install, the full suite, the demo and every command in this README run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. Two Anthropic-adapter tests skip themselves unless the optional `anthropic` extra is installed.
+- **1,522 tests**: 686 of them the Table I file (every published cell), 836 behavioural, of which 391 are the red team's regression tests (`tests/test_rt_*.py`). `pytest` runs them in about two minutes.
+- **Regression tests for every defect fixed**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), and an adversarial red team (53 findings, two rounds of fixes, then a final regression pass over where the fixes met). The defects, fixes and known residuals are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
+- **Hand-derived expectations** for eight caseload letters that each pin one behaviour (three leg disabilities, four extremities, a linked clause, an immaterial unknown, a material question, an unlisted term, a lower recomputation, clinical names with no side) — [fixtures/caseload/EXPECTED.md](fixtures/caseload/EXPECTED.md).
+- **Clean clone:** install, the full suite, the demo and every command in this README run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. A few tests skip themselves: two Anthropic-adapter tests without the optional `anthropic` extra, and three that need Windows paths or a case-insensitive filesystem.
 
 ## Limitations
 
 - **Synthetic letters only.** Every letter in `fixtures/` was written for this project. No real veteran data is in the repository, and the parser has not met real VA correspondence.
 - **Narrative letters, not the code sheet,** and no OCR: an image-only PDF is refused.
+- **The parser fails closed, sometimes on ordinary wording.** Hard-wrapped all-caps prose, a year inside a condition name ("status post 2019 arthroscopy") or a percentage in an unrelated paragraph of the decision section make it refuse the letter rather than read it. A staged rating written under two different condition names reads as two ratings.
 - **No live model has been run.** The model boundary is exercised through the real Strands structured-output path with scripted payloads, including malformed and adversarial ones. No accuracy claim is made for any provider.
 - **4.26 as currently in force.** Where 4.26(d) decides a result, the report says the exception took effect April 16, 2023; for a period before that date the prior rule applied the factor without exception. Recheck does not read the decision date.
 - **Paired skeletal muscles** (4.26's third category) are not modelled.
@@ -195,7 +199,7 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 
 ## Model providers
 
-The zero-model path is first-class; a provider is an adapter. `recheck preflight --model bedrock|anthropic|ollama` checks configuration **without an inference call**: provider known, SDK importable, model id and region set, credential resolvable — reporting only whether and how, never a value. Only condition names are sent to a model: no percentages, no stated rating, no other letter text. The Bedrock and Anthropic clients get the time budget and a single attempt; the Ollama client gets the time budget. Configuration is by environment variable; see [`.env.example`](.env.example).
+The zero-model path is first-class; a provider is an adapter. `recheck preflight --model bedrock|anthropic|ollama` checks configuration **without an inference call**: provider known, model id set, endpoint safe (an override, or for Bedrock the endpoint botocore resolves), SDK importable, region set, credential resolvable — reporting only whether and how, never a value. `audit` and `sweep` call a provider only when run with `--model`. Only condition names, as the parser read them, are sent to a model: never a percentage, the stated rating, a date or a long number. Other text written inside a table row's name is sent with it. The Bedrock and Anthropic clients get the time budget and a single attempt; the Ollama client gets the time budget. Configuration is by environment variable; see [`.env.example`](.env.example).
 
 ## Repository layout
 
@@ -203,11 +207,14 @@ The zero-model path is first-class; a provider is an adapter. `recheck preflight
 src/recheck/
   cfr/combine.py            Table I arithmetic, bilateral subtotal, final degree
   cfr/rating.py             4.26(a)-(d) bilateral group and the derivation trace
-  extract/deterministic.py  letter parser and the schedule-vocabulary lexicon
+  extract/deterministic.py  letter parser (fails closed) and the schedule-vocabulary lexicon
+  extract/pdf_text.py       PDF text in a child process with a 20 s budget
   classify.py               extremity group (lexicon, then model) and side
+  schema.py                 the strict schema for model output
   materiality.py            does an unknown fact change the rating?
-  graph.py                  Strands graph, gates, interrupt, answer validation, timeline hook
-  case.py                   durable case state (plain, validated JSON)
+  graph.py                  Strands graph, document caps, gates, interrupt, answer validation, timeline hook
+  case.py                   durable case state (plain JSON, validated on load) and the per-case lock
+  provenance.py             the decision trace: who decided what
   report.py, sweep.py       the report and the caseload triage
   cli.py                    sweep / audit / resume / show / preflight
   models/scripted.py        zero-model Strands Model

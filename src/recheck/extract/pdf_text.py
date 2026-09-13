@@ -16,7 +16,10 @@ parent's main script in the child: a script that reads a letter without an
 "if __name__ == '__main__'" guard failed with a RuntimeError, and a guarded
 one still re-imported the Strands SDK (a second of the budget) before pypdf
 read a byte. On Windows, killing a virtual environment's python.exe also
-ends the interpreter it launched (checked), so the kill is complete.
+ends the interpreter it launched (checked), so the kill is complete. The
+parent waits in short steps, so Ctrl+C is not held until the budget runs
+out, and the child ends itself at its budget, so a parent killed outright
+does not leave pypdf working.
 
 The limits arrive as arguments rather than being read from recheck.graph's
 constants, so a test that lowers a constant in the parent is honoured in the
