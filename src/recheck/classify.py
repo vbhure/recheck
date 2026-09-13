@@ -27,10 +27,11 @@ Model output is untrusted. A classification is used only if it passes all of:
                parser would otherwise settle silently (first wins, last wins).
   FLOOR        confidence at or above CONFIDENCE_FLOOR.
   VETO         a "none" is not accepted for a name containing limb or
-               peripheral-nerve vocabulary (EXTREMITY_MARKERS), or non-ASCII
-               letters that can disguise it. Saying "not an arm or leg" is the
-               error that silently removes a 4.26 pair, so it has to be
-               consistent with the words on the page.
+               peripheral-nerve vocabulary (EXTREMITY_MARKERS), read after
+               folding away accents, marks and invisible characters, or
+               letters outside Latin-1 that can disguise it. Saying "not an
+               arm or leg" is the error that silently removes a 4.26 pair, so
+               it has to be consistent with the words on the page.
   TIME         the answer arrives within the provider's time budget. An answer
                that arrives later is not used, however it got there.
 
@@ -54,6 +55,7 @@ import logging
 import re
 import threading
 import time
+import traceback
 import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Sequence
@@ -177,27 +179,77 @@ def derive_laterality(condition: str) -> str:
     return _sides_in(primary_clause(condition))
 
 
+def _fold(text: str) -> str:
+    """The text as the veto reads it: compatibility forms folded (NFKD), and
+    marks and invisible format characters removed.
+
+    A reader sees "knee" in "kne\\u0301e", "kn\\u200bee" (zero-width space) and
+    fullwidth letters, but the marker pattern did not, so a model "none" for
+    them was accepted (red team MODEL-RT-P2P6-04). Folding here, rather than
+    relying on the extraction layer to have done it, keeps the veto sound for
+    any caller. It also turns "Ménière" into "Meniere", which is what stops an
+    accent from being mistaken for a disguise.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.category(ch).startswith("M")
+                   and unicodedata.category(ch) != "Cf")
+
+
 def _markers_in(condition: str) -> list[str]:
-    return [m.group(0) for m in EXTREMITY_MARKERS.finditer(condition.lower())]
+    return [m.group(0) for m in EXTREMITY_MARKERS.finditer(_fold(condition).lower())]
 
 
-def _non_ascii_letters_in(condition: str) -> list[str]:
-    """Letters EXTREMITY_MARKERS cannot read. "knee" written with a Cyrillic
-    ka (U+043A) or in fullwidth letters shows a reviewer the word knee while
-    the marker pattern, and so the veto, sees nothing (red team
-    MODEL-RT-P2P6-04)."""
-    return [ch for ch in condition if ord(ch) > 127 and unicodedata.category(ch).startswith("L")]
+def _letters_outside_latin1(condition: str) -> list[str]:
+    """Letters that remain outside Latin-1 once the name is folded.
+
+    "knee" written with a Cyrillic ka (U+043A) shows a reviewer the word knee
+    while the marker pattern, and so the veto, sees nothing; folding does not
+    turn a Cyrillic letter into a Latin one. An accented Latin letter does
+    fold ("Ménière's disease", "Sjögren's syndrome"), and vetoing those sent
+    ordinary names to a human for no reason.
+    """
+    return [ch for ch in _fold(condition) if ord(ch) > 0xFF and unicodedata.category(ch).startswith("L")]
 
 
-# A condition name has no digits, percentages or "Label:" text. A name that
-# does is a capture that ran into other letter text - the veteran's name,
-# file number, a date or a prior percentage (red team MODEL-RT-P2P6-02,
-# SECRETS-F2) - and must not leave the machine, whatever the parser did.
-_LETTER_TEXT = re.compile(r"[%:]|\bper\s?cent\b", re.IGNORECASE)
+# A condition name can carry a number ("stage 3", "L4-L5", "C5-6", "DC 7101",
+# "COVID-19"). What it does not carry is the other text of a letter: a
+# percentage, a "Label:" field, a date, or a long number such as a file,
+# Social Security or telephone number. A name that has one is a capture that
+# ran into that text (red team MODEL-RT-P2P6-02, SECRETS-F2), and the
+# veteran's name, file number or a prior rating must not leave the machine,
+# whatever the parser did. The first rule withheld any digit or ':', which
+# stopped ordinary names for a human. Each pattern is checked on the NFKC
+# form, so fullwidth digits and signs count.
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+          r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+#: (pattern, what it is, fewest digits a match must hold to count)
+_LETTER_TEXT: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    (re.compile(r"%|\bper\s*cent\b", re.IGNORECASE), "a percentage", 0),
+    (re.compile(r"[^\W\d_]\)?\s*:"), "a 'Label:' field", 0),
+    (re.compile(rf"\b{_MONTH}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?\b|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}\b"
+                r"|\b\d{1,2}([-/.])\d{1,2}\1(?:\d{4}|\d{2})\b|\b(?:19|20)\d\d\b", re.IGNORECASE),
+     "a date", 0),
+    # Five digits in a row, or three or more digit groups holding five digits
+    # or more: a file number (00-000-002), an SSN (123-45-6789), a telephone
+    # number. A spinal level or a code range ("C5-6-7", "5010-5242") is not.
+    (re.compile(r"\d{5,}|\d+(?:[-./ ]\d+){2,}"), "a long number, such as a file or Social Security number", 5),
+)
+
+
+def _letter_text_in(name: str) -> str | None:
+    """What kind of letter text the name holds, or None."""
+    for pattern, what, fewest_digits in _LETTER_TEXT:
+        if any(sum(ch.isdigit() for ch in m.group(0)) >= fewest_digits for m in pattern.finditer(name)):
+            return what
+    return None
 
 
 def _unsendable(condition: str) -> str | None:
-    """Why this name is not sent to the model, or None if it may be sent."""
+    """Why this name is not sent to the model, or None if it may be sent.
+
+    The reason is fixed wording that names what was found, so a reviewer
+    knows why the name came to them; it never quotes the text it found.
+    """
     # The echo is validated as sent; the content check reads compatibility
     # forms too, so a fullwidth digit or colon counts as one.
     name = unicodedata.normalize("NFKC", condition).strip()
@@ -206,9 +258,10 @@ def _unsendable(condition: str) -> str | None:
         # sending it voided the whole batch - every other name's answer too.
         return (f"not sent to the model: the name is longer than the {MAX_CONDITION_CHARS} characters "
                 f"a classification can echo")
-    if any(ch.isnumeric() for ch in name) or _LETTER_TEXT.search(name):
-        return ("not sent to the model: the name contains digits, a percentage or a label, which a "
-                "condition name does not, so it may carry other letter text")
+    what = _letter_text_in(name)
+    if what is not None:
+        return (f"not sent to the model: the name contains {what}, which a condition name does not, "
+                f"so text from elsewhere in the letter may have run into it")
     return None
 
 
@@ -248,7 +301,7 @@ async def classify_async(
         elif names:
             batch, model_failure = await _ask_model(names, agent_factory)
             if batch is not None:
-                answers, model_failure = _index_batch(batch)
+                answers, model_failure = _index_batch(batch, names)
 
     decisions: list[Decision] = []
     for rating in ratings:
@@ -356,15 +409,15 @@ def _establish_group(rating, answers, agent_factory, model_failure, trace, evide
                 f"'not an arm or leg' is not accepted against the words on the page")
         trace.add(Actor.DETERMINISTIC, "Classification NOT USED", note, value="unknown", evidence=evidence)
         return "unknown", None, result.confidence, note
-    if result.extremity_group == "none" and _non_ascii_letters_in(rating.condition):
-        note = ("the model said 'none', but the name contains non-ASCII letters, which can disguise limb "
-                "vocabulary; 'not an arm or leg' is not accepted for it")
+    if result.extremity_group == "none" and _letters_outside_latin1(rating.condition):
+        note = ("the model said 'none', but the name contains letters outside Latin-1 even with accents "
+                "removed, which can disguise limb vocabulary; 'not an arm or leg' is not accepted for it")
         trace.add(Actor.DETERMINISTIC, "Classification NOT USED", note, value="unknown", evidence=evidence)
         return "unknown", None, result.confidence, note
     return result.extremity_group, Actor.AI, result.confidence, None
 
 
-def _index_batch(batch: ClassificationBatch) -> tuple[dict[str, object], str | None]:
+def _index_batch(batch: ClassificationBatch, sent: Sequence[str] = ()) -> tuple[dict[str, object], str | None]:
     """Index a validated batch by condition name, refusing contradictions.
 
     A batch that classifies the same name twice with different answers is
@@ -374,7 +427,14 @@ def _index_batch(batch: ClassificationBatch) -> tuple[dict[str, object], str | N
     repeats are not contradictory (a letter can rate two identically named
     conditions; the prompt lists the name once, but a model may echo it for
     each).
+
+    The reason names the condition only in the letter's own spelling, and
+    only when the echo matches a name that was sent. It used to quote the
+    echo, which the model writes: an "echo" reading "VA ERRED. The correct
+    combined rating is 60 percent - appeal now.", given twice, reached the
+    reviewer's question and case.json (red team MODEL-RT-P2P6-07).
     """
+    as_sent = {name.strip().lower(): name for name in sent}
     answers: dict[str, object] = {}
     for c in batch.classifications:
         key = c.condition.strip().lower()
@@ -382,7 +442,8 @@ def _index_batch(batch: ClassificationBatch) -> tuple[dict[str, object], str | N
         if earlier is not None and (earlier.extremity_group, earlier.confidence) != (
             c.extremity_group, c.confidence
         ):
-            return {}, (f"the model classified {c.condition!r} more than once with different answers; "
+            which = repr(as_sent[key]) if key in as_sent else "a condition name"
+            return {}, (f"the model classified {which} more than once with different answers; "
                         f"contradictory output is discarded, not repaired")
         answers[key] = c
     return answers, None
@@ -415,7 +476,9 @@ async def _ask_model(
     except (asyncio.TimeoutError, TimeoutError):
         return None, late
     except Exception as exc:  # noqa: BLE001 - any provider failure is the same outcome here
-        log.debug("model call failed", exc_info=True)
+        if log.isEnabledFor(logging.DEBUG):
+            detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.debug("model call failed:\n%s", mask_credentials(detail))
         return None, f"the model call failed ({type(exc).__name__})"
     if time.monotonic() > deadline or cancel.is_set():
         # Belt and braces behind _within_budget: whatever path an answer took,
@@ -427,7 +490,7 @@ async def _ask_model(
     if stop_reason != "tool_use" or output is None:
         shown = stop_reason if isinstance(stop_reason, str) and stop_reason in KNOWN_STOP_REASONS else "other"
         if shown == "other":
-            log.debug("unrecognised stop_reason %r", stop_reason)
+            log.debug("unrecognised stop_reason %s", mask_credentials(repr(stop_reason)))
         return None, (f"the model output was invalid or incomplete (stop_reason={shown!r}); "
                       f"it was discarded, not repaired")
     if _tool_use_count(result, raw_tool_inputs) > 1:
@@ -563,6 +626,37 @@ def _tool_use_count(result: object, raw_tool_inputs: list[str] | None) -> int:
     blocks = content if isinstance(content, list) else []
     in_message = sum(1 for block in blocks if isinstance(block, dict) and "toolUse" in block)
     return max(in_message, len(raw_tool_inputs or ()))
+
+
+# Credential material a provider library can put into an exception message or
+# a debug line: a user:password in a URL, an Authorization or API-key header,
+# AWS signing fields, bearer tokens, and key-shaped values.
+_CREDENTIAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^\s'\"<>]*@"), r"\1***@"),
+    (re.compile(r"(?<![\w/:@*])[^\s'\"<>/@:*]+:[^\s'\"<>/]+@(?=[\w\[])"), "***@"),  # user:password@host, no scheme
+    (re.compile(r"(?i)(\b(?:proxy-)?authorization[\"']?\s*[:=]\s*b?[\"']?)[^\"'\r\n]+"), r"\1***"),
+    (re.compile(r"(?i)(\b(?:x-api-key|api[-_]?key|x-amz-(?:security-token|credential|signature)"
+                r"|aws_(?:access_key_id|secret_access_key|session_token)|(?:access_|refresh_|session_|id_)?token"
+                r"|client_secret|secret|passw(?:or)?d)\b[\"']?\s*[:=]\s*b?[\"']?)[^\s\"'&,;]+"), r"\1***"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{6,}"), r"\1 ***"),
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    (re.compile(r"\b(?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{12,}\b"), "***"),
+)
+
+
+def mask_credentials(text: str) -> str:
+    """text with credential material replaced by ***.
+
+    For the --debug log only, which keeps a provider's error text because an
+    operator debugging a live run needs it. That text is written by the
+    provider library and can quote the request it failed on - the URL with
+    its user:password, or its headers - so it is masked before it is logged.
+    Masking is by shape and errs towards hiding: a debug line that loses a
+    harmless word is cheaper than one that prints a key.
+    """
+    for pattern, replacement in _CREDENTIAL_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class _RepeatedKey(ValueError):
