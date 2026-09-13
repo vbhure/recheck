@@ -26,6 +26,7 @@ UNDETERMINED rather than guessed.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from dataclasses import dataclass
 from typing import Sequence
@@ -73,6 +74,36 @@ def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool 
         [d.percent for d in decisions],
         paired=paired_disabilities(facts, both_in_factor=both_in_factor),
     )
+
+
+def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict[int, tuple[str, str]]]:
+    """The evaluation to report, and any unknown facts its derivation had to fill in.
+
+    Normally this is the evaluation from established facts. It is not always
+    the right one. A condition whose group is known but whose side is not
+    must be on SOME side, and "no side" is not among the possibilities: with
+    a left knee 10%, a right knee 10% and a knee of unstated side 60%, the
+    60% joins the bilateral group whichever side it is on, and every
+    possibility gives 80%. Leaving it out of the factor - which is what the
+    established facts alone say - gave 70%, reported as a potential
+    discrepancy against a letter that stated the correct 80%, underneath a
+    trace saying no answer could change the result.
+
+    So when the unknown facts are immaterial but the established-facts figure
+    is not the settled one, the derivation is shown for the first possible
+    completion, and the facts it assumed are returned so the trace can say
+    so. Any completion gives the same final degree; that is what settled means.
+    """
+    established = evaluate_established(decisions)
+    m = assess(decisions)
+    if not m.unknown or not m.settled or established.final_degree == m.possible[0]:
+        return established, {}
+    answers, _ = m.by_answers[0]
+    assumed = dict(zip(m.unknown, answers))
+    completed = list(decisions)
+    for index, (group, side) in assumed.items():
+        completed[index] = dataclasses.replace(decisions[index], extremity_group=group, laterality=side)
+    return evaluate_established(completed), assumed
 
 
 @dataclass(frozen=True)

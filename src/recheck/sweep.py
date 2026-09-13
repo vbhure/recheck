@@ -84,9 +84,10 @@ def outcome_from_case(store: CaseStore, case_id: str, *, reused: bool = False) -
     }.get(case.status, Outcome.FAILED)
     detail = ""
     if state == Outcome.FAILED:
-        detail = {
-            "unparsed": "no assigned evaluations or no combined evaluation statement found",
-        }.get(case.status, f"the run stopped with the case in state {case.status!r}")
+        if case.status == "unparsed":
+            detail = case.extraction_failure() or "no assigned evaluations or no combined evaluation statement found"
+        else:
+            detail = f"the run stopped with the case in state {case.status!r}"
     return Outcome(case_id, state, detail, reused=reused)
 
 

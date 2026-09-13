@@ -1,158 +1,68 @@
-"""Findings from the pre-release security review, each with a regression lock.
+"""Findings from attacking the running product, each with a regression lock.
 
-Three defects were found by attacking the running product rather than reading
-the code. None of them produced a WRONG rating - the fail-closed gate and the
-answer validation held throughout - but two of them let a run that had
-computed nothing report success, which for an audit tool is its own kind of
-wrong: the operator believes the letter was checked.
+None of these produced a wrong rating on their own, but several let a run
+that established nothing look like a finished audit - which, for an audit
+tool, is its own kind of wrong - or turned a deliberate refusal into a stack
+trace.
 
-  D1  A corrupted graph_state.json deserialised into a state with no pending
-      work. The graph reported COMPLETED, executed no nodes, wrote no result,
-      and the CLI exited 0. Fixed by defining success as a PRODUCT outcome -
-      the case must be complete and carry a recomputed degree - rather than
-      trusting the framework's status.
-
-  D2  read_document had no size limit. A 40 MB text file was read in 0.09s;
-      a multi-gigabyte one would exhaust memory, and PDF decompression bombs
-      are a known vector. Fixed with byte and page-count caps.
-
-  D4  The persisted graph state was handed to the framework unvalidated. A
-      JSON array produced an unhandled AttributeError from inside Strands'
-      deserialize_state - a stack trace instead of an explanation. Found by
-      parametrising D1's test over several corrupt payloads rather than one.
-      Fixed by validating the shape and treating any deserialisation failure
-      as a corrupt case.
-
-  D3  Strands logs node and graph failures at ERROR, so a deliberate refusal
-      printed a stack of "node failed / graph execution failed" lines beneath
-      Recheck's own one-line explanation, making correct behaviour look like a
-      crash. Fixed by suppressing framework logging unless --debug.
-
-What held up under attack, and is pinned here so it stays that way: hand-editing
-case.json to inject a fabricated laterality and mark it human-resolved does NOT
-produce arithmetic.
+  H1  Unbounded input. read_document had no size limit: a multi-gigabyte text
+      file would exhaust memory, and PDF decompression bombs are a known
+      vector. Byte and page-count caps, refused by name and exit 3.
+  H2  Untrusted persisted state. A case file or a Strands session is input:
+      malformed JSON, the wrong shape, unknown fields, an unknown status or a
+      foreign schema version is refused as corrupt rather than guessed at,
+      and a refused resume leaves case.json byte-identical.
+  H3  Case ids arrive from the command line and from filenames. Anything that
+      could escape the store, or name a Windows device, is refused.
+  H4  Framework log noise. Strands logs node failures at ERROR, so a correct
+      refusal printed "node failed / graph execution failed" beneath
+      Recheck's one-line explanation. Suppressed unless --debug.
+  H5  Tampering with case.json cannot manufacture a rating: facts marked
+      established by hand are simply never asked about, so no answer is
+      accepted and nothing is computed.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import pathlib
-import subprocess
-import sys
 
 import pytest
 
-from recheck.graph import (
-    MAX_DOCUMENT_BYTES,
-    MAX_PDF_PAGES,
-    DocumentTooLarge,
-    read_document,
+from _support import (
+    EXIT_AWAITING_HUMAN,
+    EXIT_CANNOT_PROCEED,
+    EXIT_OK,
+    LETTERS,
+    case_json,
+    cli,
+    main,
+    tabular_letter,
 )
+from recheck.case import SCHEMA_VERSION, Case, CaseCorrupt, CaseStore
+from recheck.graph import MAX_DOCUMENT_BYTES, MAX_PDF_PAGES, DocumentTooLarge, read_document
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-LETTER_NO_SIDE = ROOT / "fixtures" / "letters" / "08_nerve_no_side.txt"
-CLEAN = ROOT / "fixtures" / "letters" / "06_agrees.txt"
-CLASSIFICATIONS = ROOT / "fixtures" / "classifications" / "08_nerve_no_side.json"
-
-EXIT_OK, EXIT_AWAITING_HUMAN, EXIT_CANNOT_PROCEED = 0, 2, 3
-
-
-def cli(*args: str, store: pathlib.Path) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(ROOT / "src")
-    env["PYTHONIOENCODING"] = "utf-8"
-    return subprocess.run(
-        [sys.executable, "-m", "recheck.cli", "--store", str(store), *[str(a) for a in args]],
-        capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=180,
-    )
+PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+        ("Limitation of motion of the knee", 10), ("Tinnitus", 10)]
 
 
 @pytest.fixture
-def store(tmp_path: pathlib.Path) -> pathlib.Path:
+def store(tmp_path):
     return tmp_path / "runs"
 
 
-def _interrupted_case(store: pathlib.Path, case: str) -> subprocess.CompletedProcess:
-    result = cli("audit", LETTER_NO_SIDE, "--case", case,
-                 "--scripted", "--classifications", CLASSIFICATIONS, store=store)
-    assert result.returncode == EXIT_AWAITING_HUMAN, result.stdout + result.stderr
-    return result
+@pytest.fixture
+def interrupted(store, tmp_path):
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    code, out, err = main("audit", letter, "--case", "c1", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    return store / "c1"
 
 
 # --------------------------------------------------------------------------
-# D1: a run that computes nothing must not report success
-# --------------------------------------------------------------------------
-
-def test_corrupted_graph_state_fails_loudly(store):
-    _interrupted_case(store, "c1")
-    (store / "c1" / "graph_state.json").write_text('{"evil": true}', encoding="utf-8")
-
-    result = cli("resume", "--case", "c1", "--answer", "2=left,3=right",
-                 "--scripted", "--classifications", CLASSIFICATIONS, store=store)
-    assert result.returncode == EXIT_CANNOT_PROCEED
-    combined = result.stdout + result.stderr
-    assert "reported success" in combined
-    assert "may be corrupt" in combined
-
-    case = json.loads((store / "c1" / "case.json").read_text(encoding="utf-8"))
-    assert case["recomputed_degree"] is None, "a no-op run must not leave a result"
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        '{"evil": true}',      # valid object, no pending work
-        "{}",                  # empty object
-        "[]",                  # D4: array, not an object
-        '{"nodes": "not-a-dict"}',
-        "not json at all",     # unparseable
-        "null",
-        '"a string"',
-    ],
-)
-def test_various_corrupt_graph_states_all_fail_closed(store, payload):
-    case_id = "gs" + str(abs(hash(payload)) % 10000)
-    _interrupted_case(store, case_id)
-    (store / case_id / "graph_state.json").write_text(payload, encoding="utf-8")
-    result = cli("resume", "--case", case_id, "--answer", "2=left,3=right",
-                 "--scripted", "--classifications", CLASSIFICATIONS, store=store)
-    assert result.returncode == EXIT_CANNOT_PROCEED, result.stdout + result.stderr
-
-
-def test_hand_edited_case_cannot_manufacture_a_rating(store):
-    """Held up under attack. Pinned so it keeps holding.
-
-    The tamper marks both nerve conditions as human-resolved on opposite
-    sides - which, if believed, would apply 4.26 and change the band.
-    """
-    _interrupted_case(store, "c2")
-    path = store / "c2" / "case.json"
-    case = json.loads(path.read_text(encoding="utf-8"))
-    for decision in case["decisions"]:
-        if "nerve" in decision["condition"]:
-            decision["needs_human"] = False
-            decision["laterality"] = "left" if "median" in decision["condition"] else "right"
-            decision["extremity_group"] = "upper"
-            decision["decided_by"] = "DETERMINISTIC"
-    case["status"] = "resumed"
-    path.write_text(json.dumps(case), encoding="utf-8")
-
-    result = cli("resume", "--case", "c2", "--answer", "2=left,3=right",
-                 "--scripted", "--classifications", CLASSIFICATIONS, store=store)
-    assert result.returncode == EXIT_CANNOT_PROCEED
-    assert "did not require human input" in (result.stdout + result.stderr)
-    after = json.loads(path.read_text(encoding="utf-8"))
-    assert after["recomputed_degree"] is None
-
-
-# --------------------------------------------------------------------------
-# D2: bounded input
+# H1: bounded input
 # --------------------------------------------------------------------------
 
 def test_the_limits_are_sane_but_generous():
-    """A rating decision is a few pages. The caps should be far above that
-    and far below anything that threatens memory."""
     assert 1024 * 1024 <= MAX_DOCUMENT_BYTES <= 64 * 1024 * 1024
     assert 20 <= MAX_PDF_PAGES <= 500
 
@@ -165,7 +75,7 @@ def test_oversized_text_document_is_refused(tmp_path, monkeypatch):
         read_document(path)
 
 
-def test_a_document_just_under_the_limit_is_accepted(tmp_path, monkeypatch):
+def test_a_document_under_the_limit_is_accepted(tmp_path, monkeypatch):
     monkeypatch.setattr("recheck.graph.MAX_DOCUMENT_BYTES", 4096)
     path = tmp_path / "ok.txt"
     path.write_text("RATING DECISION\n" + "x" * 100, encoding="utf-8")
@@ -188,53 +98,163 @@ def test_pdf_with_too_many_pages_is_refused(tmp_path, monkeypatch):
 
 
 def test_oversized_document_refusal_reaches_the_cli_as_exit_3(store, tmp_path):
-    """End to end: the refusal must escape the graph node and become an exit
-    code, not a stack trace."""
     big = tmp_path / "huge.txt"
     big.write_text("RATING DECISION\n" + "x" * (MAX_DOCUMENT_BYTES + 1024), encoding="utf-8")
-    result = cli("audit", big, "--case", "big", "--scripted", store=store)
-    assert result.returncode == EXIT_CANNOT_PROCEED
-    assert "over the" in (result.stdout + result.stderr)
+    code, out, err = main("audit", big, "--case", "big", store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "over the" in err
+    assert "NO DISCREPANCY FOUND" not in out
+
+
+def test_an_image_only_pdf_is_refused_through_the_cli(store, tmp_path):
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.rect(20, 20, 100, 60, style="F")
+    scanned = tmp_path / "scanned.pdf"
+    pdf.output(str(scanned))
+    code, out, err = main("audit", scanned, "--case", "scan", store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "requires OCR" in err
+
+
+def test_a_corrupt_pdf_is_refused_not_crashed_on(store, tmp_path):
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >>\n%%EOF garbage")
+    code, out, err = main("audit", broken, "--case", "broken", store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "Traceback" not in out + err
 
 
 # --------------------------------------------------------------------------
-# D3: a refusal must read as a refusal, not a crash
+# H2: persisted state is untrusted input
 # --------------------------------------------------------------------------
 
-def test_refusal_output_contains_no_framework_trace(store, tmp_path):
+def _valid_case_dict() -> dict:
+    from dataclasses import asdict
+
+    return asdict(Case("c1", "x.txt", status="awaiting_human"))
+
+
+@pytest.mark.parametrize(
+    "content,fragment",
+    [
+        ("{not json", "not valid JSON"),
+        ("[]", "not a JSON object"),
+        ("null", "not a JSON object"),
+        ('"a string"', "not a JSON object"),
+        (json.dumps({**_valid_case_dict(), "schema_version": SCHEMA_VERSION - 1}), "schema_version"),
+        (json.dumps({k: v for k, v in _valid_case_dict().items() if k != "schema_version"}), "schema_version"),
+        (json.dumps({**_valid_case_dict(), "needs_human": True}), "unexpected fields"),
+        (json.dumps({**_valid_case_dict(), "status": "resumed"}), "unknown status"),
+        (json.dumps({**_valid_case_dict(), "status": "invalid_answer"}), "unknown status"),
+        (json.dumps({**_valid_case_dict(), "decisions": [{"condition": "x"}]}), "malformed content"),
+        (json.dumps({**_valid_case_dict(), "trace": [{"actor": "ROBOT", "action": "a", "detail": "d"}]}),
+         "malformed content"),
+    ],
+)
+def test_a_corrupt_or_foreign_case_file_is_refused(tmp_path, content, fragment):
+    store = CaseStore(tmp_path / "runs")
+    path = store.path_for("c1")
+    path.parent.mkdir(parents=True)
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(CaseCorrupt, match=fragment):
+        store.load("c1")
+
+
+@pytest.mark.parametrize("command", ["resume", "show"])
+def test_the_cli_refuses_a_corrupt_case_with_exit_3(store, interrupted, command):
+    path = interrupted / "case.json"
+    path.write_text("[]", encoding="utf-8")
+    args = ["--case", "c1"] + (["--answer", "2=left"] if command == "resume" else [])
+    code, _, err = main(command, *args, store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "not a JSON object" in err
+    assert path.read_text(encoding="utf-8") == "[]"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ['{"evil": true}', "{}", "[]", "not json at all", "null", '"a string"', '{"nodes": "not-a-dict"}'],
+)
+def test_a_corrupt_strands_session_is_refused_and_the_case_is_untouched(store, interrupted, payload):
+    (session_file,) = (interrupted / "session").rglob("multi_agent.json")
+    session_file.write_text(payload, encoding="utf-8")
+    before = (interrupted / "case.json").read_bytes()
+    code, out, err = main("resume", "--case", "c1", "--answer", "2=left", store=store)
+    assert code == EXIT_CANNOT_PROCEED, out + err
+    assert "re-audit it with --fresh" in err
+    assert "Traceback" not in out + err
+    assert (interrupted / "case.json").read_bytes() == before
+
+
+def test_hand_marked_facts_cannot_manufacture_a_rating(store, interrupted):
+    """H5. The tamper claims the letter established the knee's side. It is
+    then not asked about, so every answer is rejected and nothing computes."""
+    path = interrupted / "case.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["decisions"][2].update(laterality="left", side_by="DETERMINISTIC")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    for attempt in ("2=left", "2=right", "1=left"):
+        code, _, _ = main("resume", "--case", "c1", "--answer", attempt, store=store)
+        assert code == EXIT_CANNOT_PROCEED
+        after = case_json(store, "c1")
+        assert after["recomputed_degree"] is None and after["status"] == "awaiting_human"
+        assert "was not asked about" in after["rejected_answer"]
+
+    raw = case_json(store, "c1")
+    raw["status"] = "ready"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    code, _, err = main("resume", "--case", "c1", "--answer", "2=left", store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "not waiting on an answer" in err
+    assert case_json(store, "c1")["recomputed_degree"] is None
+
+
+# --------------------------------------------------------------------------
+# H3: case ids
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["../escape", "..", "a/b", "a\\b", "with space", "C:x", "/abs", "", "x" * 65, "café",
+     "con", "CON", "nul", "Aux", "prn", "com1", "COM9", "lpt1", "LPT9"],
+)
+def test_case_ids_that_escape_the_store_or_name_a_device_are_refused(tmp_path, hostile):
+    with pytest.raises(ValueError):
+        CaseStore(tmp_path / "runs").path_for(hostile)
+
+
+@pytest.mark.parametrize("hostile", ["../escape", "a/b", "nul", "COM1"])
+def test_the_cli_refuses_a_hostile_case_id_with_exit_3(store, tmp_path, hostile):
+    code, _, err = main("audit", LETTERS / "06_agrees.txt", "--case", hostile, store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "case id" in err
+    assert not (tmp_path / "escape").exists()
+
+
+# --------------------------------------------------------------------------
+# H4: a refusal reads as a refusal, in a real process
+# --------------------------------------------------------------------------
+
+def test_refusal_output_contains_no_framework_trace_unless_debug(store, tmp_path):
     big = tmp_path / "huge.txt"
     big.write_text("RATING DECISION\n" + "x" * (MAX_DOCUMENT_BYTES + 1024), encoding="utf-8")
-    result = cli("audit", big, "--case", "big2", "--scripted", store=store)
-    combined = result.stdout + result.stderr
-    for noise in ("Traceback", "node_id=", "graph execution failed", "node failed"):
+    quiet = cli("audit", big, "--case", "q", store=store)
+    combined = quiet.stdout + quiet.stderr
+    assert quiet.returncode == EXIT_CANNOT_PROCEED
+    for noise in ("Traceback", "node_id=", "graph execution failed", "node failed", "Graph without execution"):
         assert noise not in combined, f"framework noise leaked into product output: {noise!r}"
     assert "[recheck]" in combined, "the refusal must still explain itself"
 
-
-def test_debug_flag_restores_framework_logging(store, tmp_path):
-    """The noise is suppressed, not discarded - it must be recoverable."""
-    big = tmp_path / "huge.txt"
-    big.write_text("RATING DECISION\n" + "x" * (MAX_DOCUMENT_BYTES + 1024), encoding="utf-8")
-    quiet = cli("audit", big, "--case", "q", "--scripted", store=store)
-    loud = cli("--debug", "audit", big, "--case", "l", "--scripted", store=store)
-    assert len(loud.stdout + loud.stderr) > len(quiet.stdout + quiet.stderr)
+    loud = cli("--debug", "audit", big, "--case", "l", store=store)
+    assert loud.returncode == EXIT_CANNOT_PROCEED
+    assert len(loud.stdout + loud.stderr) > len(combined), "the noise is suppressed, not discarded"
 
 
-# --------------------------------------------------------------------------
-# the happy paths must be untouched by all of the above
-# --------------------------------------------------------------------------
-
-def test_clean_letter_still_completes(store):
-    result = cli("audit", CLEAN, "--case", "clean", "--scripted", store=store)
-    assert result.returncode == EXIT_OK, result.stdout + result.stderr
-    assert "NO DISCREPANCY FOUND" in result.stdout
-
-
-def test_full_interrupt_resume_still_completes(store):
-    _interrupted_case(store, "happy")
-    result = cli("resume", "--case", "happy", "--answer", "2=left,3=right",
-                 "--scripted", "--classifications", CLASSIFICATIONS, store=store)
-    assert result.returncode == EXIT_OK, result.stdout + result.stderr
-    case = json.loads((store / "happy" / "case.json").read_text(encoding="utf-8"))
-    assert case["recomputed_degree"] == 80
-    assert case["status"] == "complete"
+def test_the_happy_path_is_untouched_by_the_hardening(store):
+    code, out, _ = main("audit", LETTERS / "06_agrees.txt", "--case", "clean", store=store)
+    assert code == EXIT_OK
+    assert "NO DISCREPANCY FOUND" in out

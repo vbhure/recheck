@@ -59,8 +59,8 @@ def verdict(case: Case) -> tuple[str, str]:
             f"Recheck does not pick one.",
         )
     if case.status == "unparsed":
-        return ("COULD NOT READ THE LETTER",
-                "No assigned evaluations or no combined evaluation statement were found.")
+        reason = case.extraction_failure() or "no assigned evaluations or no combined evaluation statement were found"
+        return ("COULD NOT READ THE LETTER", reason[:1].upper() + reason[1:].rstrip(".") + ".")
     if case.recomputed_degree is None:
         return ("INCOMPLETE - NO RECOMPUTATION",
                 "Recheck could not establish enough facts to recompute this evaluation.")
@@ -138,8 +138,12 @@ def render(case: Case, *, show_trace: bool = True) -> str:
                       f"case {case.case_id}   letter: {pathlib.Path(case.source_path).name}",
                       classifier_note(case), RULE]
 
+    # A scripted run replays committed answers; every place an AI decision is
+    # shown says so, or a demo on the zero-model path reads as a model run.
+    # The evaluations table used to say plain [AI] under a trace that said
+    # "replayed fixture".
+    ai_label = "AI - replayed fixture" if (case.classifier or "").startswith("scripted") else "AI"
     if show_trace and case.trace:
-        ai_label = "AI - replayed fixture" if (case.classifier or "").startswith("scripted") else "AI"
         out += ["", "DECISION TRACE - who decided what", THIN, case.load_trace().render(ai_label=ai_label)]
 
     decisions = case.load_decisions()
@@ -149,7 +153,7 @@ def render(case: Case, *, show_trace: bool = True) -> str:
             lines = wrap(d.condition, 64) or [""]
             out.append(f"  [{index}] {str(d.percent) + '%':<5}{lines[0]}")
             out += [f"{'':11}{line}" for line in lines[1:]]
-            facts = f"extremity group: {d.extremity_group} [{_by(d.group_by)}]"
+            facts = f"extremity group: {d.extremity_group} [{_by(d.group_by, ai_label=ai_label)}]"
             if d.extremity_group != "none":
                 facts += f"   side: {d.laterality} [{_by(d.side_by, side=True)}]"
             out.append(f"{'':11}{facts}")
@@ -183,12 +187,12 @@ def render(case: Case, *, show_trace: bool = True) -> str:
     return "\n".join(out)
 
 
-def _by(actor: Actor | None, *, side: bool = False) -> str:
+def _by(actor: Actor | None, *, side: bool = False, ai_label: str = "AI") -> str:
     if actor is None:
         return "not established"
     if actor is Actor.DETERMINISTIC:
         return "letter" if side else "lexicon"
-    return {"AI": "AI", "HUMAN": "reviewer"}[actor.value]
+    return {"AI": ai_label, "HUMAN": "reviewer"}[actor.value]
 
 
 def _pct(value: int | None) -> str:

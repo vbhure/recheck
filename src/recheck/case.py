@@ -69,6 +69,13 @@ class Case:
     status: str = "open"
     schema_version: int = SCHEMA_VERSION
 
+    def extraction_failure(self) -> str | None:
+        """Why the document was refused, as the extract node recorded it."""
+        for raw in reversed(self.trace):
+            if raw.get("action") == "Extraction FAILED":
+                return raw.get("detail")
+        return None
+
     # -- trace bridging --------------------------------------------------
     def load_trace(self) -> Trace:
         restored = Trace()

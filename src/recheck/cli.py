@@ -126,8 +126,16 @@ def _resolve_factory(args) -> tuple[object | None, str, str]:
                   "unknown, never guessed"), "none"
 
 
+def _quoted(value: object) -> str:
+    """A path as it must be typed. The printed commands are meant to be pasted,
+    and an unquoted store under a profile such as "C:/Users/Jane Doe" split
+    into two arguments. Double quotes work in bash, cmd and PowerShell alike."""
+    text = str(value)
+    return f'"{text}"' if any(c.isspace() for c in text) else text
+
+
 def _store_flag(args) -> str:
-    return "" if args.store == DEFAULT_STORE else f" --store {args.store}"
+    return "" if args.store == DEFAULT_STORE else f" --store {_quoted(args.store)}"
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +267,7 @@ def cmd_resume(args) -> int:
         answered = f" (answers on file: {case.human_answers})" if case.human_answers else ""
         print(f"[recheck] case {args.case} is not waiting on an answer; its status is "
               f"{case.status!r}{answered}. Nothing was changed. To audit it again, run "
-              f"`recheck{_store_flag(args)} audit {case.source_path} --case {args.case} --fresh`.",
+              f"`recheck{_store_flag(args)} audit {_quoted(case.source_path)} --case {args.case} --fresh`.",
               file=sys.stderr)
         return EXIT_CANNOT_PROCEED
 

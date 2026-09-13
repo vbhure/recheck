@@ -54,7 +54,7 @@ from strands.session.file_session_manager import FileSessionManager
 from recheck.case import Case, CaseStore
 from recheck.classify import AgentFactory, Decision, classify_async
 from recheck.extract.deterministic import ExtractedRating, parse
-from recheck.materiality import Materiality, assess as assess_materiality, evaluate_established
+from recheck.materiality import Materiality, assess as assess_materiality, evaluate_for_report
 from recheck.provenance import Actor, Trace
 
 NODE_ORDER = ("extract", "classify", "assess", "compute")
@@ -132,15 +132,25 @@ class ExtractNode(MultiAgentBase):
         self.store, self.case_id, self.source = store, case_id, source
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
-        text = read_document(self.source)
-        extraction = parse(text)
+        # A refused document is recorded on the case, not only raised. Raised,
+        # the reason ("no extractable text layer", "over the 8 MB limit")
+        # reached the first run's output and nowhere else: the case stayed
+        # "open", and a second sweep over the same store reported it as "the
+        # run stopped with the case in state 'open'" - a different triage,
+        # and one that reads like a crash.
+        try:
+            extraction = parse(read_document(self.source))
+            reason = extraction.unparsed_reason or "no ratings found"
+        except (ScannedDocument, DocumentTooLarge) as exc:
+            extraction, reason = None, str(exc)
+        except Exception as exc:  # noqa: BLE001 - an unreadable document is a refusal, not a crash
+            extraction, reason = None, f"{pathlib.Path(self.source).name} could not be read ({type(exc).__name__}: {exc})"
         # The caller opens the case (recording the classifier); extraction
         # starts its facts and trace afresh.
         case = self.store.load(self.case_id)
         trace = Trace()
-        if not extraction.ok:
-            trace.add(Actor.DETERMINISTIC, "Extraction FAILED",
-                      extraction.unparsed_reason or "no ratings found", value="cannot proceed")
+        if extraction is None or not extraction.ok:
+            trace.add(Actor.DETERMINISTIC, "Extraction FAILED", reason, value="cannot proceed")
             case.status = "unparsed"
             case.store_trace(trace)
             self.store.save(case)
@@ -358,9 +368,36 @@ class ComputeNode(MultiAgentBase):
 
     async def invoke_async(self, task: Any, invocation_state: dict | None = None, **kw: Any) -> MultiAgentResult:
         case = self.store.load(self.case_id)
-        decisions = case.load_decisions()
         trace = case.load_trace()
-        evaluation = evaluate_established(decisions)
+        if case.status not in COMPUTABLE_STATES:
+            # The assess -> compute edge is the gate, but the persisted Strands
+            # session names the node a resumed run continues at. A hand-edited
+            # session naming "compute" ran the arithmetic with the question
+            # still open and reported NO DISCREPANCY FOUND, exit 0. So this
+            # node checks committed state for itself.
+            trace.add(Actor.DETERMINISTIC, "Arithmetic REFUSED",
+                      f"the case is {case.status!r}, not ready to compute", value="not computed")
+            case.store_trace(trace)
+            self.store.save(case)
+            return _done(Status.FAILED)
+        decisions = case.load_decisions()
+        evaluation, assumed = evaluate_for_report(decisions)
+        for index, (group, side) in sorted(assumed.items()):
+            if group not in ("upper", "lower"):
+                shown = "not an arm or leg"
+            elif side == "both":
+                shown = f"both {group} extremities"
+            else:
+                shown = f"the {side} {group} extremity"
+            trace.add(
+                Actor.DETERMINISTIC,
+                "Arithmetic shown with an assumed fact",
+                f"[{index}] {decisions[index].condition}: not established by the letter. Every possibility "
+                f"gives the same final degree, so the arithmetic below is shown as if it were {shown}; "
+                f"the result does not depend on it.",
+                value="does not change the result",
+                rule="38 CFR 4.25, 4.26",
+            )
 
         if evaluation.bilateral_members:
             trace.add(
@@ -458,7 +495,10 @@ def parse_answers(
 
     answers: dict[int, tuple[str, str]] = {}
     for raw_index, raw_value in pairs:
-        if not raw_index.isdigit():
+        # ASCII only: str.isdigit() is also true for "²", which int() then
+        # refuses. That ValueError escaped the assess node, failed the graph
+        # and left the case unable to accept a correct answer afterwards.
+        if not (raw_index.isascii() and raw_index.isdigit()):
             problems.append(f"{raw_index!r} is not a condition index")
             continue
         index = int(raw_index)

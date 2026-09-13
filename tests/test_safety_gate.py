@@ -1,84 +1,221 @@
-"""The conditional edge guarding the arithmetic.
+"""The gates between the nodes, and why they are shaped the way they are.
 
-Regression cover for a real defect: returning Status.FAILED from the assess
-node did NOT stop downstream nodes, so a REJECTED human answer still reached
-`compute` and produced a combined rating. The gate is now a conditional edge
-on the graph and is enforced by reading committed state from disk.
+Returning Status.FAILED from a node does not stop downstream nodes in this
+Strands version, so conditional edges do the stopping:
 
-The integration-level cover is in test_cross_process_resume.py, which asserts
-that a rejected answer leaves recomputed_degree as None. These tests pin the
-gate's own contract so the behaviour cannot be weakened without failing here.
+    extract --(the extract node's own result COMPLETED)--> classify
+    assess  --(case status "ready" or "complete")--------> compute
+
+Defects regression-locked here:
+
+  G1  Fail-open gates. A rejected human answer once reached compute and
+      produced a combined rating, because a FAILED status did not stop the
+      graph. The compute gate reads committed case state and blocks every
+      status except the two from which computing is correct.
+  G2  Unstable gate conditions. Strands re-evaluates edge conditions when it
+      persists a session, to work out where a resumed run continues. A
+      condition that stops being true once its target has run ("status is
+      classified", false as soon as assess asks) emptied the resume
+      frontier, and the resumed run silently did nothing. The persisted
+      session must name 'assess' as the node to continue at.
+  G3  A hand-edited session naming 'compute' as the node to continue at ran
+      the arithmetic with the question still open and reported NO
+      DISCREPANCY FOUND, exit 0: the edge was bypassed, not evaluated.
+      compute now checks committed state for itself.
 """
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
-from recheck.case import Case, CaseStore
-from recheck.graph import BLOCKED_STATES, _safe_to_compute, choose_bilateral_pair
-from recheck.classify import Decision
-from recheck.provenance import Actor
+from _support import (
+    EXIT_CANNOT_PROCEED,
+    actions,
+    batch,
+    item,
+    main,
+    nodes_run,
+    run_audit,
+    scripted,
+    tabular_letter,
+)
+from recheck.case import STATUSES, Case, CaseStore
+from recheck.graph import (
+    COMPUTABLE_STATES,
+    _extraction_succeeded,
+    _safe_to_compute,
+    build_graph,
+)
+from strands.multiagent.base import MultiAgentResult, Status
+
+PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+        ("Limitation of motion of the knee", 10), ("Tinnitus", 10)]
 
 
-def _gate(tmp_path, status: str):
+def _gate(tmp_path, status: str) -> bool:
     store = CaseStore(tmp_path / "runs")
     store.save(Case(case_id="g", source_path="x.txt", status=status))
     return _safe_to_compute(store, "g")(None)
 
 
-@pytest.mark.parametrize("status", BLOCKED_STATES)
-def test_blocked_states_prevent_arithmetic(tmp_path, status):
+# --------------------------------------------------------------------------
+# G1: the compute gate
+# --------------------------------------------------------------------------
+
+def test_the_computable_states_are_exactly_ready_and_complete():
+    assert COMPUTABLE_STATES == ("ready", "complete")
+    assert set(COMPUTABLE_STATES) <= set(STATUSES)
+
+
+@pytest.mark.parametrize("status", [s for s in STATUSES if s not in ("ready", "complete")])
+def test_every_other_status_blocks_the_arithmetic(tmp_path, status):
     assert _gate(tmp_path, status) is False
 
 
-@pytest.mark.parametrize("status", ["open", "resumed", "complete"])
-def test_computable_states_allow_arithmetic(tmp_path, status):
+@pytest.mark.parametrize("status", ["ready", "complete"])
+def test_ready_and_complete_allow_the_arithmetic(tmp_path, status):
     assert _gate(tmp_path, status) is True
 
 
-def test_gate_is_fail_closed_when_the_case_cannot_be_read(tmp_path):
-    """An unreadable case must block, not default to computing."""
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", "[]", "null", json.dumps({"case_id": "g", "status": "ready"}),
+     json.dumps({**Case("g", "x.txt", status="ready").__dict__, "schema_version": 1}),
+     json.dumps({**Case("g", "x.txt").__dict__, "status": "resumed"})],
+)
+def test_an_unreadable_case_blocks_the_arithmetic(tmp_path, content):
     store = CaseStore(tmp_path / "runs")
-    assert _safe_to_compute(store, "never-written")(None) is False
+    path = store.path_for("g")
+    path.parent.mkdir(parents=True)
+    path.write_text(content, encoding="utf-8")
+    assert _safe_to_compute(store, "g")(None) is False
 
 
-def test_awaiting_human_is_a_blocked_state():
-    """Explicit: the arithmetic may not run while a question is outstanding."""
-    assert "awaiting_human" in BLOCKED_STATES
-    assert "invalid_answer" in BLOCKED_STATES
+def test_a_missing_case_blocks_the_arithmetic(tmp_path):
+    assert _safe_to_compute(CaseStore(tmp_path / "runs"), "never-written")(None) is False
 
 
 # --------------------------------------------------------------------------
-# Deterministic pair selection
+# The extraction gate
 # --------------------------------------------------------------------------
 
-def _d(percent, group, side, *, needs_human=False, by=Actor.DETERMINISTIC):
-    return Decision("c", percent, group, side, by, None, needs_human, None, None)
+@pytest.mark.parametrize(
+    "results,expected",
+    [
+        ({"extract": SimpleNamespace(status=Status.COMPLETED)}, True),
+        ({"extract": SimpleNamespace(status=Status.FAILED)}, False),
+        ({"extract": SimpleNamespace(status=Status.INTERRUPTED)}, False),
+        ({}, False),
+    ],
+)
+def test_the_extraction_gate_reads_the_extract_nodes_own_result(results, expected):
+    assert _extraction_succeeded(SimpleNamespace(results=results)) is expected
 
 
-def test_pair_requires_opposite_sides():
-    assert choose_bilateral_pair([_d(20, "lower", "left"), _d(10, "lower", "left")]) is None
+def test_a_failed_extraction_runs_nothing_downstream(tmp_path):
+    letter = tmp_path / "unreadable.txt"
+    letter.write_text("Dear veteran,\n\nThank you for your enquiry.\n", encoding="utf-8")
+    factory = scripted(batch(item("anything", "upper")))
+    store, _ = run_audit(tmp_path / "runs", "bad", letter, factory)
+    case = store.load("bad")
+    assert case.status == "unparsed"
+    assert nodes_run(store, "bad") == ["extract"]
+    assert factory.models == [], "classification must not run on a failed extraction"
+    for action in ("Assessment", "Question for a reviewer", "Final degree of disability"):
+        assert action not in actions(store, "bad")
+    assert "Extraction FAILED" in actions(store, "bad")
 
 
-def test_pair_requires_the_same_extremity_group():
-    assert choose_bilateral_pair([_d(20, "upper", "left"), _d(10, "lower", "right")]) is None
+def test_a_failed_extraction_exits_3_and_claims_nothing(tmp_path):
+    letter = tmp_path / "unreadable.txt"
+    letter.write_text("RATING DECISION\n  1. Tinnitus (DC 6260) ..... 10%\n", encoding="utf-8")
+    code, out, err = main("audit", letter, "--case", "bad", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "COULD NOT READ THE LETTER" in out
+    assert "NO DISCREPANCY FOUND" not in out
 
 
-def test_pair_requires_both_to_be_compensable():
-    """4.26(c): a 0% rating is not a compensable disability."""
-    assert choose_bilateral_pair([_d(20, "lower", "left"), _d(0, "lower", "right")]) is None
+# --------------------------------------------------------------------------
+# G2: stable conditions and the resume frontier
+# --------------------------------------------------------------------------
+
+def _session_state(store: CaseStore, case_id: str) -> dict:
+    (path,) = store.session_dir(case_id).rglob("multi_agent.json")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_pair_excludes_anything_still_awaiting_a_human():
-    unresolved = [_d(20, "upper", "left", needs_human=True), _d(10, "upper", "right")]
-    assert choose_bilateral_pair(unresolved) is None
+def test_the_interrupted_session_continues_at_assess(tmp_path):
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store, _ = run_audit(tmp_path / "runs", "pair", letter)
+    state = _session_state(store, "pair")
+    assert state["status"] == "interrupted"
+    assert "assess" in state["next_nodes_to_execute"]
+    assert "compute" not in state["next_nodes_to_execute"]
+    assert state["interrupted_nodes"] == ["assess"]
 
 
-def test_pair_is_found_when_every_condition_is_met():
-    assert choose_bilateral_pair([_d(20, "upper", "left"), _d(10, "upper", "right")]) == (0, 1)
+def test_the_extraction_gate_is_still_true_on_the_restored_graph(tmp_path):
+    """Re-evaluated after the interrupt, the extraction gate must not flip."""
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store, _ = run_audit(tmp_path / "runs", "pair", letter)
+    restored = build_graph(store, "pair", str(letter), None)
+    assert _extraction_succeeded(restored.state) is True
 
 
-def test_non_extremity_conditions_are_never_paired():
-    """Guards the contradiction case: group "none" must not pair even if a
-    side somehow reached the decision."""
-    assert choose_bilateral_pair([_d(60, "none", "left"), _d(10, "none", "right")]) is None
+def test_no_session_is_written_outside_the_strands_session_directory(tmp_path):
+    """One owner for graph state: no hand-written graph_state.json beside it."""
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store, _ = run_audit(tmp_path / "runs", "pair", letter)
+    case_dir = store.dir_for("pair")
+    assert sorted(p.name for p in case_dir.iterdir()) == ["case.json", "session"]
+    assert not list(case_dir.rglob("graph_state.json"))
+
+
+# --------------------------------------------------------------------------
+# G3: compute defends itself
+# --------------------------------------------------------------------------
+
+def test_a_session_edited_to_continue_at_compute_does_not_compute(tmp_path):
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store_root = tmp_path / "runs"
+    code, _, _ = main("audit", letter, "--case", "pair", store=store_root)
+    assert code == 2
+    store = CaseStore(store_root)
+    (path,) = store.session_dir("pair").rglob("multi_agent.json")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["next_nodes_to_execute"] = ["compute"]
+    state["interrupted_nodes"] = ["compute"]
+    state["completed_nodes"] = ["extract", "classify"]
+    context = state["_internal_state"]["interrupt_state"]["context"]
+    context["compute"] = context.pop("assess")
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    code, out, err = main("resume", "--case", "pair", "--answer", "2=left", store=store_root)
+    case = store.load("pair")
+    assert code == EXIT_CANNOT_PROCEED
+    assert case.recomputed_degree is None
+    assert case.status == "awaiting_human"
+    assert "NO DISCREPANCY FOUND" not in out and "POTENTIAL DISCREPANCY" not in out
+    if "compute" in nodes_run(store, "pair"):
+        assert "Arithmetic REFUSED" in actions(store, "pair")
+
+
+@pytest.mark.parametrize("status", ["open", "extracted", "classified", "awaiting_human", "undetermined", "unparsed"])
+def test_the_compute_node_refuses_a_case_that_is_not_ready(tmp_path, status):
+    import asyncio
+
+    from recheck.graph import ComputeNode
+
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store, _ = run_audit(tmp_path / "runs", "pair", letter)
+    case = store.load("pair")
+    case.status = status
+    store.save(case)
+    result: MultiAgentResult = asyncio.run(ComputeNode(store, "pair").invoke_async("compute"))
+    after = store.load("pair")
+    assert result.status == Status.FAILED
+    assert after.recomputed_degree is None and after.status == status
+    assert "Arithmetic REFUSED" in [e["action"] for e in after.trace]

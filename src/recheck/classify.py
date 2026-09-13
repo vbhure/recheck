@@ -187,7 +187,7 @@ async def classify_async(
     if needs_model and agent_factory is not None:
         batch, model_failure = await _ask_model([r.condition for r in needs_model], agent_factory)
         if batch is not None:
-            answers = {c.condition.strip().lower(): c for c in batch.classifications}
+            answers, model_failure = _index_batch(batch)
 
     decisions: list[Decision] = []
     for rating in ratings:
@@ -269,6 +269,29 @@ def _establish_group(rating, answers, agent_factory, model_failure, trace, evide
         trace.add(Actor.DETERMINISTIC, "Classification NOT USED", note, value="unknown", evidence=evidence)
         return "unknown", None, result.confidence, note
     return result.extremity_group, Actor.AI, result.confidence, None
+
+
+def _index_batch(batch: ClassificationBatch) -> tuple[dict[str, object], str | None]:
+    """Index a validated batch by condition name, refusing contradictions.
+
+    A batch that classifies the same name twice with different answers is
+    contradictory. Indexing it naively kept whichever entry came last, so
+    "upper" then "lower" silently became "lower" - a choice nobody made. The
+    whole batch is discarded instead, like any other invalid output. Exact
+    repeats are not contradictory (a letter can rate two identically named
+    conditions, and the prompt then lists the name twice).
+    """
+    answers: dict[str, object] = {}
+    for c in batch.classifications:
+        key = c.condition.strip().lower()
+        earlier = answers.get(key)
+        if earlier is not None and (earlier.extremity_group, earlier.confidence) != (
+            c.extremity_group, c.confidence
+        ):
+            return {}, (f"the model classified {c.condition!r} more than once with different answers; "
+                        f"contradictory output is discarded, not repaired")
+        answers[key] = c
+    return answers, None
 
 
 async def _ask_model(
