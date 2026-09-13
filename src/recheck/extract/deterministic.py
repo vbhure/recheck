@@ -6,11 +6,23 @@ the model is later asked to do must be something this parser demonstrably
 cannot do.
 
 It uses no model, no network and no I/O beyond the string it is handed.
+
+It FAILS CLOSED. A red team showed that reading most of a letter is worse
+than reading none of it: a rating sentence in an unsupported wording, the
+second stage of a staged rating, a wrapped last table row or a row after a
+mid-list "Evidence" heading was silently skipped, and a confident figure was
+reported on the partial list. So parse() accounts for every percentage in
+the decision section - each must belong to a rating it read, a combined
+statement, or a prior value named inside that rating's own sentence - and
+refuses the letter otherwise. Refusing costs a manual review; a partial
+reading costs a wrong rating.
 """
 
 from __future__ import annotations
 
+import bisect
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -177,6 +189,13 @@ LEXICON_SIZE = (
 # veteran's assigned evaluations. Matched only as a heading on its own line:
 # an unanchored match cut the ratings list at "with x-ray evidence of
 # arthritis" inside a rating line and silently dropped every later rating.
+#
+# What follows a heading is not simply ignored, though. A letter with a
+# stand-alone "Evidence" line in the middle of its table had its later rows
+# cut, the numbering stayed contiguous, and a figure was computed on the
+# rows above the heading. parse() therefore refuses a letter whose text after
+# the heading holds a rating it did not read above it; a restatement of one
+# it did read (REASONS FOR DECISION often repeats the decision) is fine.
 STOP_HEADINGS = ("REASONS FOR DECISION", "EVIDENCE", "REFERENCES")
 _STOP_HEADING = re.compile(
     r"^[ \t]*(?:" + "|".join(STOP_HEADINGS) + r")[ \t]*:?[ \t]*$", re.I | re.M
@@ -186,19 +205,74 @@ _TABULAR = re.compile(
     r"^\s*(?P<row>\d+)\.\s*(?P<condition>.+?)\s*\.{3,}\s*(?P<pct>\d{1,3})\s*%",
     re.MULTILINE,
 )
+# Every line that starts like a numbered row. The contiguity check compares
+# row numbers with 1..n, so it cannot see a missing LAST row: a final row
+# wrapped onto a second line was dropped and the rating computed without it.
+_NUMBERED_LINE = re.compile(r"^[ \t]*\d+\.(?!\d)", re.M)
 
 # Prose forms, most specific first. "increased to" must win over "currently
 # evaluated as" in the same sentence, or historical values get captured.
-_PROSE_PATTERNS = [
-    re.compile(r"(?P<condition>[^.]*?)\bis increased to\s+(?P<pct>\d{1,3})\s+percent", re.I),
-    re.compile(r"(?P<condition>[^.]*?)\bis continued as\s+(?P<pct>\d{1,3})\s+percent", re.I),
-    re.compile(r"(?P<condition>[^.]*?)\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
-]
+#
+# Only the anchor is a pattern; the condition is the text between the last
+# period before it and the anchor. The earlier patterns captured it with a
+# leading "(?P<condition>[^.]*?)", which the regex engine retries from every
+# start position - quadratic in sentence length: a 30 KB letter with no
+# period took a minute to parse, and a megabyte would take hours.
+_PROSE_ANCHORS = (
+    re.compile(r"\bis increased to\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    re.compile(r"\bis continued as\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    re.compile(r"\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
+)
 
 _COMBINED = [
     re.compile(r"COMBINED EVALUATION FOR COMPENSATION\s*:?\s*(\d{1,3})\s*%", re.I),
     re.compile(r"combined evaluation for compensation is\s+(\d{1,3})\s+percent", re.I),
 ]
+# "Your previous combined evaluation for compensation is 30 percent" is
+# history, not the statement under review. Taking the first match anywhere
+# reported it as the stated value and printed a false discrepancy.
+_HISTORICAL_QUALIFIER = re.compile(r"\b(?:previous|prior|former)\s+$", re.I)
+
+# Every percentage, in any spelling Recheck might meet. A written-out value
+# ("ten percent") is never part of a rating Recheck reads, so it can only
+# ever refuse a letter - which is the point: it must not vanish silently.
+_PERCENT_TOKEN = re.compile(
+    r"(?<!\d)(?<!\d\.)\d+(?:\.\d+)?\s*(?:%|per[-\s]*cent\b)"
+    r"|\b(?:zero|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\s+per[-\s]*cent\b",
+    re.I,
+)
+
+# A prior value named inside the sentence that assigns the current one:
+# "Evaluation of X, currently evaluated as 30 percent disabling, is increased
+# to 60 percent" or "Your claim for X, previously 10 percent, is increased to
+# 20 percent". It is accounted for only when it sits directly in front of the
+# rating parse() read (_AFTER_PRIOR). On its own, "X, which is currently 10
+# percent disabling, is continued" is how a CONTINUED rating is worded, and
+# "PTSD, currently evaluated as 50 percent disabling, and tinnitus is
+# increased to 10 percent" names a second rating; treating either as
+# history would drop an evaluation.
+_PRIOR_VALUE = re.compile(
+    r",\s*(?:currently evaluated as|which is currently|previously evaluated as|previously rated as|previously)"
+    r"\s+(?P<pct>\d{1,3})\s+percent(?:\s+disabling)?,?",
+    re.I,
+)
+_AFTER_PRIOR = re.compile(r"\s*(?:(?:is|has been)\s+(?:granted|continued|increased|assigned)\s*)?")
+
+# A line that cannot be the middle of a wrapped rating sentence: blank, a
+# heading with no lower-case letter ("DECISION", "DEPARTMENT OF VETERANS
+# AFFAIRS"), or a "Label: value" line ("Name: ...", "File Number: ..."). Only
+# periods used to end sentences, so a letterhead with none ran straight into
+# the first rating, and "Name: Jane Q Veteran File Number: 123-45-6789 ...
+# DECISION Left cubital tunnel syndrome" became a condition name - stored,
+# printed, and sent to the model provider.
+_LABEL_LINE = re.compile(r"^[ \t]*[A-Za-z][A-Za-z .'/#-]{0,40}:(?:\s|$)")
+
+# A condition name longer than this is text the sentence split failed to
+# separate. It is also the model schema's limit (recheck.schema).
+MAX_CONDITION_CHARS = 200
+# Diagnostic codes are the only long numbers a condition name legitimately
+# carries: "Limitation of flexion, right knee (DC 5260)", "DC 5010-5260".
+_CODE_REFERENCE = re.compile(r"\b(?:DC|diagnostic codes?)\s*\d{4}(?:\s*[-/]\s*\d{4})*", re.I)
 
 
 @dataclass
@@ -227,10 +301,93 @@ class Extraction:
         return bool(self.ratings) and self.stated_combined is not None
 
 
-def _decision_scope(text: str) -> str:
-    """Trim explanatory sections whose percentages are not assigned ratings."""
+def _normalise(text: str) -> str:
+    """Fold the text to what a reader sees, before anything matches on it.
+
+    The lexicon, the "none" veto and the side reader match ASCII words. pypdf
+    commonly extracts "finger" with the "fi" ligature, and a soft hyphen or a
+    zero-width space inside "knee" is invisible on the page. Each made the
+    word unrecognisable, so a model's "none" for "Tenosynovitis, right
+    finger" passed the veto and dropped a 4.26 pair while the report printed
+    the word "finger". Compatibility decomposition folds ligatures, full-width
+    letters and non-breaking spaces; combining marks and invisible format
+    characters are dropped, so "HİP" reads "HIP" and "kn<ZWSP>ee" reads "knee".
+    """
+    if text.isascii():
+        return text
+    decomposed = unicodedata.normalize("NFKD", text)
+    kept = "".join(ch for ch in decomposed if unicodedata.category(ch) not in ("Mn", "Cf"))
+    return unicodedata.normalize("NFC", kept)
+
+
+def _script(char: str) -> str:
+    return "LATIN" if char.isascii() else unicodedata.name(char, "UNKNOWN").split(" ", 1)[0]
+
+
+def _lookalike_problem(text: str) -> str | None:
+    """Why normalised decision text is still ambiguous to read, if it is.
+
+    Normalisation cannot fold a Cyrillic "к" into a Latin "k": they are
+    different letters that look the same. "кnee" defeats every word match
+    while a reviewer reads "knee", and "pеrcent" would hide a percentage from
+    the completeness check. English decision letters have no reason to mix
+    alphabets inside a word or to use another script's digits, so either is
+    refused rather than read.
+    """
+    if text.isascii():
+        return None
+    if any(ch.isdigit() and not ch.isascii() for ch in text):
+        return "the decision section contains digits from a non-Latin script, which can read as a different number"
+    for word in re.findall(r"[^\W\d_]+", text):
+        if not word.isascii() and len({_script(ch) for ch in word}) > 1:
+            return ("a word in the decision section mixes letters from different alphabets (look-alike characters), "
+                    "so what Recheck matches may not be what a reader sees")
+    return None
+
+
+def _name_problem(condition: str) -> str | None:
+    """Why a captured condition name cannot be what the letter rates, if it cannot."""
+    if not condition:
+        return "a rating statement names no condition"
+    if len(condition) > MAX_CONDITION_CHARS:
+        return (f"a condition name runs to {len(condition)} characters, so the rating statement "
+                f"could not be separated from the text around it")
+    if ":" in condition:
+        return "a condition name contains a 'label:' - letterhead or other letter text ran into it"
+    if re.search(r"%|\bper[-\s]*cent", condition, re.I):
+        return "a condition name contains another percentage, so the statement holds more than one value"
+    if re.search(r"\d{3,}", _CODE_REFERENCE.sub(" ", condition)):
+        return ("a condition name contains a long number that is not a diagnostic code (a date, a file "
+                "number or other letter text)")
+    if any(ch.isalpha() and _script(ch) != "LATIN" for ch in condition):
+        return "a condition name contains letters outside the Latin alphabet (possible look-alike characters)"
+    return None
+
+
+def _split_scope(text: str) -> tuple[str, str, str | None]:
+    """(decision section, the text after it, the heading that ended it)."""
     match = _STOP_HEADING.search(text)
-    return text[: match.start()] if match else text
+    if not match:
+        return text, "", None
+    return text[: match.start()], text[match.start():], match.group(0).strip().rstrip(":").strip()
+
+
+def _blocks(text: str) -> list[str]:
+    """Group lines into runs a wrapped sentence can span; see _LABEL_LINE."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.split("\n"):
+        if not line.strip() or not re.search(r"[a-z]", line) or _LABEL_LINE.match(line):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            if line.strip():
+                blocks.append(line)
+        else:
+            current.append(line)
+    if current:
+        blocks.append(" ".join(current))
+    return blocks
 
 
 def _sentences(text: str) -> list[str]:
@@ -238,15 +395,42 @@ def _sentences(text: str) -> list[str]:
 
     VA letters are hard-wrapped, so a clause can straddle a newline. Patterns
     must see "with an evaluation of" as contiguous. Splitting on sentence
-    boundaries also prevents a non-greedy condition capture from running
-    backwards into the letterhead.
+    boundaries - and never joining across a blank line, a heading or a
+    "Label:" line - stops a condition capture running backwards into the
+    letterhead.
     """
-    flat = re.sub(r"\s+", " ", text)
-    # Protect the period in a middle initial ("Name: R. SYNTHETIC") and in
-    # abbreviations like "No." so they do not end a sentence.
-    flat = re.sub(r"\b([A-Z])\.\s", r"\1<DOT> ", flat)
-    parts = re.split(r"(?<=[.;])\s+", flat)
-    return [p.replace("<DOT>", ".").strip() for p in parts if p.strip()]
+    sentences: list[str] = []
+    for block in _blocks(text):
+        flat = re.sub(r"\s+", " ", block)
+        # Protect the period in a middle initial ("Name: R. SYNTHETIC") and in
+        # abbreviations like "No." so they do not end a sentence.
+        flat = re.sub(r"\b([A-Z])\.\s", r"\1<DOT> ", flat)
+        parts = re.split(r"(?<=[.;])\s+", flat)
+        sentences.extend(p.replace("<DOT>", ".").strip() for p in parts if p.strip())
+    return sentences
+
+
+def _prose_rating(sentence: str) -> tuple[str, int, set[int]] | None:
+    """(raw condition span, percent, offsets of the percentages it accounts for), or None."""
+    for anchor in _PROSE_ANCHORS:
+        match = anchor.search(sentence)
+        if match is None:
+            continue
+        start = sentence.rfind(".", 0, match.start()) + 1
+        span = sentence[start:match.start()]
+        accounted = {match.start("pct")}
+        accounted.update(start + prior.start("pct") for prior in _PRIOR_VALUE.finditer(span)
+                         if _AFTER_PRIOR.fullmatch(span, prior.end()))
+        return span, int(match.group("pct")), accounted
+    return None  # most specific anchor wins for a given sentence
+
+
+def _combined_offsets(text: str) -> set[int]:
+    return {m.start(1) for pattern in _COMBINED for m in pattern.finditer(text)}
+
+
+def _key(condition: str) -> str:
+    return " ".join(condition.lower().split())
 
 
 def _lexical_group(text: str) -> ExtremityGroup:
@@ -281,23 +465,28 @@ def _classify_extremity(condition: str) -> ExtremityGroup:
     return primary
 
 
-
-_LEAD_IN = re.compile(r"(?:service connection for|evaluation of)\s+", re.I)
-_TRAILING_VERB = re.compile(r"\s+is (?:granted|continued|increased|assigned)\b.*$", re.I)
+# "Your claim for X ... is increased to" is a lead-in like "Service connection
+# for X"; without it the condition read "Your claim for right De Quervain's
+# tenosynovitis, previously 10 percent".
+_LEAD_IN = re.compile(r"(?:service connection for|evaluation of|claim for)\s+", re.I)
+_TRAILING_VERB = re.compile(r"\s+(?:is|has been) (?:granted|continued|increased|assigned)\b.*$", re.I)
 
 
 def _clean(condition: str) -> str:
     """Reduce a matched span to just the condition name.
 
-    Two failure modes this guards against, both real:
-      - the non-greedy capture running backwards into the letterhead, so the
-        condition reads "SYNTHETIC File Number: 00-000-002 ...". Anchoring to
-        the LAST lead-in phrase fixes it.
+    Three failure modes this guards against, all real:
+      - the capture running backwards into the letterhead, so the condition
+        reads "SYNTHETIC File Number: 00-000-002 ...". Anchoring to the LAST
+        lead-in phrase trims it when there is one; _sentences and
+        _name_problem cover the letters where there is not.
       - trailing verb phrases ("... is granted") ending up in the condition
         name, which pollutes the evidence shown to a reviewer.
+      - a prior value ("currently evaluated as 30 percent disabling",
+        "previously 10 percent") left inside the name.
     """
     condition = re.sub(r"\s+", " ", condition).strip()
-    condition = re.sub(r",?\s*currently evaluated as \d{1,3} percent disabling,?", "", condition, flags=re.I)
+    condition = _PRIOR_VALUE.sub("", condition)
     matches = list(_LEAD_IN.finditer(condition))
     if matches:
         condition = condition[matches[-1].end():]
@@ -320,8 +509,11 @@ class _LineIndex:
         self.lines = text.splitlines()
         flat: list[str] = []
         origin: list[int] = []
+        newlines: list[int] = []
         previous_space = False
         for offset, char in enumerate(text):
+            if char == "\n":
+                newlines.append(offset)
             if char.isspace():
                 if previous_space:
                     continue
@@ -333,10 +525,13 @@ class _LineIndex:
             origin.append(offset)
         self.flat = "".join(flat)
         self.origin = origin
+        # Line numbers by bisection. Counting newlines from the top for every
+        # rating made a long letter quadratic.
+        self.newlines = newlines
         self.cursor = 0
 
-    def _line_of(self, offset: int) -> int:
-        return self.text.count("\n", 0, offset) + 1
+    def line_of(self, offset: int) -> int:
+        return bisect.bisect_left(self.newlines, offset) + 1
 
     def locate(self, phrase: str) -> tuple[str, int]:
         """(source text, first line number) for the next occurrence of phrase."""
@@ -351,72 +546,161 @@ class _LineIndex:
                 at = self.flat.find(probe)
             if at != -1:
                 end = min(at + len(probe), len(self.origin)) - 1
-                first, last = self._line_of(self.origin[at]), self._line_of(self.origin[end])
+                first, last = self.line_of(self.origin[at]), self.line_of(self.origin[end])
                 self.cursor = at + len(probe)
                 span = " ".join(line.strip() for line in self.lines[first - 1:last])
                 return span, first
         return phrase.strip()[:120], 0
 
 
+_PARTIAL = "refusing rather than computing on a partial list"
+
+
+def _refuse(result: Extraction, reason: str) -> Extraction:
+    result.ratings = []
+    result.unparsed_reason = reason
+    return result
+
+
 def parse(text: str) -> Extraction:
-    """Extract ratings and the stated combined evaluation from letter text."""
+    """Extract ratings and the stated combined evaluation from letter text.
+
+    Refuses (ratings empty, unparsed_reason set) whenever the letter cannot be
+    read completely and unambiguously. See the module docstring.
+    """
     result = Extraction()
-    scope = _decision_scope(text)
+    text = _normalise(text)
+    scope, tail, heading = _split_scope(text)
+    # The decision section only: its words become facts. Evidence text after
+    # a stop heading may fairly write micrograms with a Greek mu beside a Latin g.
+    problem = _lookalike_problem(scope)
+    if problem:
+        return _refuse(result, f"{problem}; refusing rather than guessing")
     index = _LineIndex(text)
-    seen: set[tuple[str, int]] = set()
+    read: set[tuple[str, int]] = set()
 
     # Every numbered row is its own evaluation, even when two rows read
     # identically (two separately rated scars): tabular rows are never deduped.
     rows: list[int] = []
+    accounted: set[int] = set()
     for match in _TABULAR.finditer(scope):
         rows.append(int(match.group("row")))
+        accounted.add(match.start("pct"))
         condition = _clean(match.group("condition"))
+        number = index.line_of(match.start("condition"))
+        problem = _name_problem(condition)
+        if problem:
+            return _refuse(result, f"{problem} (letter line {number}); {_PARTIAL}")
         percent = int(match.group("pct"))
-        number = scope.count("\n", 0, match.start("condition")) + 1
         source = index.lines[number - 1].strip() if number <= len(index.lines) else condition
+        read.add((_key(condition), percent))
         result.ratings.append(
             ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
         )
 
-    if not result.ratings:
-        # Sentence-scoped matching. Letters are hard-wrapped, so patterns are
+    if rows:
+        # A numbered list with a gap means a row did not match the pattern (a
+        # wrapped line, a missing leader). Computing on the rows that did match
+        # would silently drop an evaluation, so the letter is refused instead.
+        if rows != list(range(1, len(rows) + 1)):
+            missing = sorted(set(range(1, max(rows) + 1)) - set(rows))
+            return _refuse(result, (
+                f"numbered evaluations are not contiguous (rows read: {rows}; missing: {missing or 'order'}); "
+                f"{_PARTIAL}"
+            ))
+        accounted |= _combined_offsets(scope)
+        for token in _PERCENT_TOKEN.finditer(scope):
+            if token.start() not in accounted:
+                # A last row wrapped onto a second line, a second stage in a
+                # row ("20% from ...; 30% from ..."), a stray value.
+                return _refuse(result, (
+                    f"a percentage on letter line {index.line_of(token.start())} ({token.group(0).strip()}) "
+                    f"is not part of any rating row Recheck could read; {_PARTIAL}"
+                ))
+        numbered = len(_NUMBERED_LINE.findall(scope))
+        if numbered != len(rows):
+            return _refuse(result, (
+                f"{numbered} numbered lines but {len(rows)} rating rows matched the rating pattern; {_PARTIAL}"
+            ))
+    else:
+        # Sentence-scoped matching. Letters are hard-wrapped, so anchors are
         # applied to whitespace-normalised sentences rather than raw text -
         # otherwise a line break inside "with an\nevaluation of" defeats the
         # match, and an unanchored capture bleeds backwards through the header.
+        pending: list[tuple[str, int]] = []
+        named: set[str] = set()
         for sentence in _sentences(scope):
-            for pattern in _PROSE_PATTERNS:
-                match = pattern.search(sentence)
-                if not match:
-                    continue
-                condition = _clean(match.group("condition"))
-                percent = int(match.group("pct"))
-                key = (condition.lower(), percent)
-                if not condition or key in seen:
-                    break
-                seen.add(key)
-                source, number = index.locate(condition)
-                result.ratings.append(
-                    ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
-                )
-                break  # most specific pattern wins for a given sentence
+            accounted = _combined_offsets(sentence)
+            found = _prose_rating(sentence)
+            if found is not None:
+                span, percent, offsets = found
+                accounted |= offsets
+            for token in _PERCENT_TOKEN.finditer(sentence):
+                if token.start() not in accounted:
+                    # A rating in a wording Recheck does not read ("An
+                    # evaluation of 30 percent is assigned from ...", often
+                    # the later stage of a staged rating) was skipped here,
+                    # and the figure computed without it.
+                    _, line = index.locate(sentence)
+                    where = f"letter line {line}" if line else "the decision section"
+                    return _refuse(result, (
+                        f"a percentage in {where} ({token.group(0).strip()}) is not part of any rating "
+                        f"statement Recheck could read; {_PARTIAL}"
+                    ))
+            if found is None:
+                continue
+            condition = _clean(span)
+            problem = _name_problem(condition)
+            if problem:
+                return _refuse(result, f"{problem}; {_PARTIAL}")
+            if _key(condition) in named:
+                # Two statements for one condition are either a staged rating
+                # (20 percent, then 30 percent from a later date: one
+                # disability, counted twice) or two separately rated
+                # conditions with identical names (counted once when repeats
+                # were deduplicated). The words do not say which.
+                return _refuse(result, (
+                    f"the decision section rates {condition!r} more than once (a staged rating, or two "
+                    f"evaluations the letter does not tell apart); refusing rather than choosing a reading"
+                ))
+            named.add(_key(condition))
+            pending.append((condition, percent))
+        for condition, percent in pending:
+            read.add((_key(condition), percent))
+            source, number = index.locate(condition)
+            result.ratings.append(
+                ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
+            )
 
+    over = [r.percent for r in result.ratings if r.percent > 100]
+    if over:
+        return _refuse(result, f"an evaluation of {over[0]}% was read, but no evaluation can exceed 100%; "
+                               f"refusing rather than computing on it")
+
+    stated: set[int] = set()
     for pattern in _COMBINED:
-        match = pattern.search(text)
-        if match:
-            result.stated_combined = int(match.group(1))
-            break
+        for match in pattern.finditer(text):
+            if _HISTORICAL_QUALIFIER.search(text, max(0, match.start() - 24), match.start()):
+                continue
+            stated.add(int(match.group(1)))
+    if len(stated) > 1:
+        return _refuse(result, (
+            f"the letter states more than one combined evaluation ({', '.join(f'{v}%' for v in sorted(stated))}); "
+            f"refusing rather than choosing which one is under review"
+        ))
+    result.stated_combined = next(iter(stated), None)
+    if result.stated_combined is not None and result.stated_combined > 100:
+        return _refuse(result, f"a combined evaluation of {result.stated_combined}% was read, but no combined "
+                               f"evaluation can exceed 100%; refusing rather than comparing against it")
 
-    # A numbered list with a gap means a row did not match the pattern (a
-    # wrapped line, a missing leader). Computing on the rows that did match
-    # would silently drop an evaluation, so the letter is refused instead.
-    if rows and rows != list(range(1, len(rows) + 1)):
-        missing = sorted(set(range(1, max(rows) + 1)) - set(rows))
-        result.ratings = []
-        result.unparsed_reason = (
-            f"numbered evaluations are not contiguous (rows read: {rows}; missing: {missing or 'order'}); "
-            f"refusing rather than computing on a partial list"
-        )
-        return result
+    if tail and result.ratings:
+        after = [(_clean(m.group("condition")), int(m.group("pct"))) for m in _TABULAR.finditer(tail)]
+        after += [(_clean(span), percent) for span, percent, _ in filter(None, map(_prose_rating, _sentences(tail)))]
+        if any((_key(condition), percent) not in read for condition, percent in after):
+            return _refuse(result, (
+                f"a rating statement after the {heading!r} heading is not one read above it, so the heading "
+                f"may have cut the list of evaluations; {_PARTIAL}"
+            ))
 
     if not result.ratings:
         result.unparsed_reason = "no rating lines matched any known tabular or prose pattern"
