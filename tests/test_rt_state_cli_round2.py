@@ -256,11 +256,12 @@ def test_facts_the_engine_refuses_on_a_complete_case_do_not_stop_a_sweep(store, 
              "evidence": None} for i in range(7) for side in ("left", "right")]
     _edit(store, "a", lambda raw: raw.update(decisions=many))
 
-    with pytest.raises(CaseCorrupt, match="engine refuses"):
+    with pytest.raises(CaseCorrupt, match="engine refuses|could change its result"):
         CaseStore(store).load("a")
     code, out, err = main("sweep", work, store=store)
     assert code == EXIT_AWAITING_HUMAN, out + err
-    assert "CASELOAD TRIAGE" in out and "engine refuses" in _flat(out)
+    flat = _flat(out)
+    assert "CASELOAD TRIAGE" in flat and "COULD NOT PROCEED 1" in flat and "Nothing was deleted" in flat
 
 
 # ==========================================================================
@@ -335,8 +336,8 @@ def test_a_follow_up_question_from_resume_exits_2_and_a_rejected_answer_exits_3(
     # accepted answer (Z2's HUMAN-F11): the settle step treats it as a first pass.
     settle = AssessNode._settle
     monkeypatch.setattr(AssessNode, "_settle",
-                        lambda self, case, decisions, trace, *, after_answers: settle(
-                            self, case, decisions, trace, after_answers=False))
+                        lambda self, *args, after_answers, **kwargs: settle(
+                            self, *args, after_answers=False, **kwargs))
     code, out, err = main("resume", "--case", "f", "--answer", "2=unknown", store=store)
     assert case_json(store, "f")["status"] == "awaiting_human"
     assert case_json(store, "f")["rejected_answer"] is None
