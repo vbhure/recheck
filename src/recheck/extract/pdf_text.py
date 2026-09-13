@@ -31,6 +31,7 @@ import logging
 import pickle
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 
 
@@ -68,19 +69,37 @@ _BOOTSTRAP = (
 
 def extract(data: bytes, name: str, limits: Limits, seconds: float) -> Outcome:
     """Extract the text of a PDF in a child process, within seconds of wall-clock time."""
-    request = pickle.dumps({"path": list(sys.path), "data": data, "name": name,
+    request = pickle.dumps({"path": list(sys.path), "data": data, "name": name, "seconds": seconds,
                             "limits": dataclasses.asdict(limits)})
+    # Popen and short waits rather than subprocess.run: a Ctrl+C in the parent
+    # was held until the child's whole budget ran out, and the finally kills
+    # the child however the parent leaves. The child also ends itself at its
+    # budget (see _serve), so a parent killed outright does not leave pypdf
+    # working for hours.
+    proc = subprocess.Popen([sys.executable, "-I", "-c", _BOOTSTRAP], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    deadline = time.monotonic() + seconds
+    stdout = stderr = b""
     try:
-        # subprocess.run kills the child when the timeout expires.
-        done = subprocess.run([sys.executable, "-I", "-c", _BOOTSTRAP], input=request, capture_output=True,
-                              timeout=seconds, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
-        return Outcome("timeout")
+        pending: bytes | None = request
+        while True:
+            try:
+                stdout, stderr = proc.communicate(input=pending, timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                pending = None
+                if time.monotonic() >= deadline:
+                    return Outcome("timeout")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
     try:
         # Our own child's report: plain values and pypdf's exception objects.
-        kind, value, records = pickle.loads(done.stdout)
+        kind, value, records = pickle.loads(stdout)
     except Exception:  # noqa: BLE001 - killed, crashed, or wrote something else
-        last = done.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [f"exit code {done.returncode}"]
+        last = stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [f"exit code {proc.returncode}"]
         return Outcome("died", last[0])
     _replay(records)
     return Outcome(kind, value)
@@ -114,6 +133,13 @@ def _replay(records: list[logging.LogRecord]) -> None:
 
 def _serve(request: dict) -> None:
     """The child: read the PDF and write one pickled report to stdout."""
+    # An orphan - the parent killed outright - ends at its budget.
+    import os
+    import threading
+
+    stop = threading.Timer(float(request.get("seconds", 60.0)) + 1.0, os._exit, (70,))
+    stop.daemon = True
+    stop.start()
     report = sys.stdout.buffer
     sys.stdout = sys.stderr  # nothing else may write into the report
     collect = _Collect()

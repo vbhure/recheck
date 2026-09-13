@@ -317,7 +317,10 @@ def test_a_condition_name_carrying_a_file_number_is_refused_not_used():
     letter = ("Veteran Jane Q Sample 123-45-6789\n"
               "Tinnitus is continued as 10 percent disabling.\n\n"
               "Your combined evaluation for compensation is 10 percent.\n")
-    assert "long number" in refused(letter)
+    # Split from the rating sentence (final regression RG-01), the name line
+    # is refused as a possible salutation; within one line, as a long number.
+    assert "salutation" in refused(letter)
+    assert "long number" in refused(letter.replace("6789\n", "6789 "))
 
 
 def test_only_condition_names_reach_the_model_prompt(tmp_path):

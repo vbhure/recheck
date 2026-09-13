@@ -70,8 +70,10 @@ def verdict(case: Case, *, question_open: bool = True) -> tuple[str, str]:
         else:
             # Over the enumeration limit there are no possible degrees, and
             # this read "The rating could be not established".
-            could = (f"The possible ratings could not be enumerated: too many facts are unknown. "
-                     f"The letter states {stated}.")
+            # The reason says why (too many unknown facts, or more arm and leg
+            # ratings than the 4.26(d) search is verified for - where no fact
+            # need be unknown at all).
+            could = f"No possible ratings were computed. The letter states {stated}."
         return (
             "UNDETERMINED - NOT COMPUTED",
             # Only the first letter is raised: capitalize() lowercased the rest.
@@ -230,7 +232,7 @@ def render(case: Case, *, show_trace: bool = True, notice: str | None = None, qu
             listed = ", ".join(f"[{i}]" for i in case.immaterial_unknowns)
             out.append(f"  unknown facts for {listed} could not change this result, so nobody was asked")
     elif case.status == "undetermined" and not case.possible_degrees:
-        out.append(row("possible final degrees", "not enumerated: too many unknown facts"))
+        out.append(row("possible final degrees", "not computed (see the reason below)"))
     else:
         out.append(row("possible final degrees", _or(case.possible_degrees)))
 

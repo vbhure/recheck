@@ -584,6 +584,7 @@ def cmd_preflight(args) -> int:
         print("[recheck] the zero-cost path is unaffected: use --scripted.")
         return EXIT_CANNOT_PROCEED
     print("[recheck] configuration is ready. A live run WILL consume provider credits.")
+    print(f"[recheck] audit and sweep call it only when run with --model {config.provider}.")
     return EXIT_OK
 
 

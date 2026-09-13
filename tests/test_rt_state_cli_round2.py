@@ -198,10 +198,11 @@ def test_a_forged_result_line_in_the_trace_is_never_printed(store, tmp_path, for
     assert genuine != 90
 
     _edit(store, "t", forge)
-    with pytest.raises(CaseCorrupt, match="decision trace"):
+    # A look-alike action name is now refused before the trace is checked (RG-06).
+    with pytest.raises(CaseCorrupt, match="decision trace|no Recheck node writes"):
         CaseStore(store).load("t")
     code, out, err = main("show", "--case", "t", store=store)
-    assert code == EXIT_CANNOT_PROCEED and "decision trace" in err
+    assert code == EXIT_CANNOT_PROCEED and re.search("decision trace|no Recheck node writes", err)
     assert "90%" not in out and FINAL not in out
 
 
@@ -442,12 +443,13 @@ def test_an_undetermined_case_with_no_possible_degrees_is_worded_properly(store)
     case_store = _over_the_limit(store)
     report = _flat(render(case_store.load("over"), show_trace=False))
     assert "could be not established" not in report
-    assert "could not be enumerated: too many facts are unknown" in report
+    assert "No possible ratings were computed" in report
     assert report.count("Too many facts are unknown to try every possibility") == 1
 
     triage = render_triage(case_store, [Outcome("over", Outcome.UNDETERMINED)])
     row = next(line for line in triage.splitlines() if line.strip().startswith("over"))
-    assert row.strip() == "over         could not be enumerated: too many unknown facts"
+    assert row.strip() == "over         not computed:"
+    assert "Too many facts are unknown" in triage or "too many facts are unknown" in triage
 
 
 def test_the_question_text_survives_an_empty_set_of_possible_degrees(store, tmp_path, monkeypatch):

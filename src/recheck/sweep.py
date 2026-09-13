@@ -290,13 +290,10 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
                 lines.append(f"       recheck{store_flag} resume --case {outcome.case_id} --answer \"{placeholder}\"")
             elif outcome.state == Outcome.UNDETERMINED:
                 bucket = undetermined
-                if case.possible_degrees:
-                    lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}: "
-                             f"{(case.undetermined_reason or '')[:44]}"]
-                else:
-                    # No degrees: the enumeration was over its limit. This row
-                    # read "could be ?: too many facts are unknown to try every poss".
-                    lines = [f"     {outcome.case_id:<12} could not be enumerated: too many unknown facts"]
+                # The reason is wrapped, not cut: it used to stop mid-word at 44 characters.
+                head = (f"could be {_or(case.possible_degrees)}:" if case.possible_degrees else "not computed:")
+                lines = [f"     {outcome.case_id:<12} {head}"]
+                lines += [f"     {'':<12} {part}" for part in wrap(case.undetermined_reason or "", 60)]
             elif case.recomputed_degree == case.stated_combined:
                 bucket, lines = agree, []
             else:

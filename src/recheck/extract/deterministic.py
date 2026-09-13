@@ -306,13 +306,20 @@ _PARENTHETICAL_LINE = re.compile(
     r"^\s*(?:\([^()\n]*\)|(?:DC|diagnostic codes?)\s*\d{4}(?:\s*[-/]\s*\d{4})*)\s*[.,;]?\s*$", re.I
 )
 _SENTENCE_END = re.compile(r"[.;!?][)\"'\]]*$")
+# Words a wrapped sentence can end a line on and carry on after: "Service
+# connection for" / "Left knee strain is granted".
+_JOINING_TAIL = re.compile(
+    r"\b(?:a|an|the|of|for|to|and|or|with|in|on|at|by|from|as|is|was|are|were|be|been|has|have|under|"
+    r"including|include|includes)\s*$",
+    re.I,
+)
 
 # A condition name longer than this is text the sentence split failed to
 # separate. It is also the model schema's limit (recheck.schema).
 MAX_CONDITION_CHARS = 200
 # Diagnostic codes are the only long numbers a condition name legitimately
 # carries: "Limitation of flexion, right knee (DC 5260)", "DC 5010-5260".
-_CODE_REFERENCE = re.compile(r"\b(?:DC|diagnostic codes?)\s*\d{4}(?:\s*[-/]\s*\d{4})*", re.I)
+_CODE_REFERENCE = re.compile(r"\b(?:DCs?|diagnostic codes?)\s*\d{4}(?:\s*(?:[-/,]|and)\s*\d{4})*", re.I)
 # No condition name starts with a verb, a conjunction or a preposition; a
 # captured one that does is the tail of a sentence split from its start.
 _NOT_A_NAME_START = re.compile(
@@ -468,6 +475,16 @@ def _blocks(text: str) -> list[tuple[str, bool]]:
         heading = parenthetical = continues = False
         if re.search(r"[a-z]", line):
             joins = True
+            # An unfinished line that does not grammatically lead into the
+            # next ("Dear Mr. Right," / "Knee strain is continued ...", or a
+            # name and address block) is not the start of that sentence.
+            # Joined, "Right" became the knee's side and the whole salutation
+            # was sent to the model as part of the condition name. The next
+            # run is marked as possibly starting mid-sentence, and parse()
+            # refuses a rating there that has no lead-in.
+            if current and unfinished and re.match(r"[A-Z]", stripped) and not _JOINING_TAIL.search(current[-1]):
+                blocks.append((" ".join(current), soft))
+                current = []
         else:
             heading = bool(_HEADING_WORD.search(line))
             parenthetical = bool(_PARENTHETICAL_LINE.match(line))
@@ -569,11 +586,20 @@ def _key(condition: str) -> str:
     every other word are kept, so a different side or site stays different.
     """
     text = _CODE_REFERENCE.sub(" ", condition)
-    text = _ACRONYM.sub(lambda m: " " if _abbreviates(m.group(1), text[:m.start()]) else m.group(0), text)
+    # Only the last few words before an acronym can spell it. Passing all the
+    # text before it re-split the whole name for every acronym: quadratic, and
+    # 438 s for a 256 KB letter of "(AB)" repeats.
+    text = _ACRONYM.sub(
+        lambda m: " " if _abbreviates(m.group(1), text[max(0, m.start() - 600):m.start()]) else m.group(0), text)
     return " ".join(word for word in re.findall(r"[a-z0-9]+", text.lower()) if word not in _KEY_FILLER)
 
 
 _ACRONYM = re.compile(r"\(\s*([A-Za-z]{2,8})\s*\)")
+
+
+def _codes(condition: str) -> frozenset[str]:
+    """The diagnostic codes a condition name cites (empty when it cites none)."""
+    return frozenset(re.findall(r"\d{4}", " ".join(m.group(0) for m in _CODE_REFERENCE.finditer(condition))))
 
 
 def _abbreviates(acronym: str, before: str) -> bool:
@@ -732,7 +758,7 @@ def _where(index: _LineIndex, sentence: str) -> str:
     return f"letter line {line}" if line else "the decision section"
 
 
-def _only_restatements(tail: str, read: dict[str, list[tuple[int, int | None]]]) -> bool:
+def _only_restatements(tail: str, read: dict[str, list[tuple[int, int | None, frozenset[str]]]]) -> bool:
     """Whether every rating-shaped statement after a stop heading repeats one read above it.
 
     A repeat matches on the condition key (see _key) and the percentage. A
@@ -745,9 +771,14 @@ def _only_restatements(tail: str, read: dict[str, list[tuple[int, int | None]]])
     """
     def repeats(condition: str, percent: int, row: int | None = None, is_row: bool = False) -> bool:
         # A row read from prose has no number to match; a sentence repeats
-        # a row whatever its number.
-        return any(p == percent and (not is_row or r is None or r == row)
-                   for p, r in read.get(_key(condition), []))
+        # a row whatever its number. _key ignores diagnostic codes, so a
+        # statement under a DIFFERENT code ("scar of the left knee (DC 7805)"
+        # after the row "Scar, left knee (DC 7804)") is a second evaluation
+        # the heading cut, not a restatement: where both name codes, they must
+        # be the same codes.
+        codes = _codes(condition)
+        return any(p == percent and (not is_row or r is None or r == row) and (not c or not codes or c == codes)
+                   for p, r, c in read.get(_key(condition), []))
 
     for line in tail.split("\n"):
         if not (_LEADER.search(line) and _PERCENT_MARK.search(line)):
@@ -781,7 +812,7 @@ def parse(text: str) -> Extraction:
         return _refuse(result, f"{problem}; refusing rather than guessing")
     index = _LineIndex(text)
     # What was read, by condition key: (percent, row number, or None for prose).
-    read: dict[str, list[tuple[int, int | None]]] = {}
+    read: dict[str, list[tuple[int, int | None, frozenset[str]]]] = {}
     sentences = _sentences(scope)
     for sentence, _ in sentences:
         if _DISTRIBUTIVE.search(sentence) and _PERCENT_MARK.search(sentence):
@@ -804,7 +835,7 @@ def parse(text: str) -> Extraction:
             return _refuse(result, f"{problem} (letter line {number}); {_PARTIAL}")
         percent = int(match.group("pct"))
         source = index.lines[number - 1].strip() if number <= len(index.lines) else condition
-        read.setdefault(_key(condition), []).append((percent, rows[-1]))
+        read.setdefault(_key(condition), []).append((percent, rows[-1], _codes(condition)))
         result.ratings.append(
             ExtractedRating(condition, percent, _classify_extremity(condition), source, number)
         )
@@ -865,7 +896,8 @@ def parse(text: str) -> Extraction:
             if may_start_mid_sentence and start == 0 and not _LEAD_IN.search(span):
                 return _refuse(result, (
                     f"the rating statement in {_where(index, sentence)} follows a line with no lower-case "
-                    f"letters that may be the start of its condition name, or letterhead; {_PARTIAL}"
+                    f"letters, or an unfinished line, that may be the start of its condition name, a "
+                    f"salutation or letterhead; {_PARTIAL}"
                 ))
             if _key(condition) in read:
                 # Two statements for one condition are either a staged rating
@@ -877,7 +909,7 @@ def parse(text: str) -> Extraction:
                     f"the decision section rates {condition!r} more than once (a staged rating, or two "
                     f"evaluations the letter does not tell apart); refusing rather than choosing a reading"
                 ))
-            read[_key(condition)] = [(percent, None)]
+            read[_key(condition)] = [(percent, None, _codes(condition))]
             pending.append((condition, percent))
         for condition, percent in pending:
             source, number = index.locate(condition)

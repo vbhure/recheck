@@ -491,7 +491,7 @@ def _check_result(case_id: str, case: Case, decisions: list[Decision]) -> None:
         # without a triage for any document.
         raise CaseCorrupt(f"case {case_id} has facts the 38 CFR engine refuses: {exc}") from exc
     if derived is None:
-        raise CaseCorrupt(f"case {case_id} is marked complete, but unknown facts on file could change its result")
+        raise CaseCorrupt(f"case {case_id} is marked complete, but the facts on file could change its result")
     final, combined, applied, alternative, decided_by_426d, steps, notes = derived
     recorded = (case.recomputed_degree, case.recomputed_combined, case.bilateral_applied, case.alternative_degree)
     if recorded != (final, combined, applied, alternative):
@@ -512,6 +512,20 @@ def _check_result(case_id: str, case: Case, decisions: list[Decision]) -> None:
 #: Trace actions the compute node records from the evaluation, and nothing else does.
 FINAL_DEGREE_ACTION = "Final degree of disability"
 RESULT_ACTIONS = (FINAL_DEGREE_ACTION, "Arithmetic", "Note")
+
+# Every action a Recheck node writes into a trace. A forged entry under any
+# other name ("Final degree: 90%", "Result: VA erred") printed in the report
+# at exit 0, because only near-copies of the result actions were checked.
+# tests/test_rt_final.py re-derives this set from the source, so it cannot
+# drift from what the nodes actually write.
+TRACE_ACTIONS = frozenset({
+    "Extraction FAILED", "Stated combined evaluation", "Extracted rating", "Extremity group",
+    "Extremity group UNKNOWN", "Classification REJECTED", "Classification NOT USED", "Side",
+    "Human answer REJECTED", "Answer", "Assessment", "Unknown facts cannot change the result",
+    "Question for a reviewer", "Result UNDETERMINED", "Arithmetic REFUSED",
+    "Arithmetic shown with an assumed fact", RULE_426D_ACTION, "Bilateral factor applies", "Arithmetic",
+    "Note", FINAL_DEGREE_ACTION,
+})
 
 
 def _action_key(action: object) -> str:
@@ -580,7 +594,9 @@ def _derive(decisions: list[Decision]) -> tuple | None:
     key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
     if key not in _DERIVED:
         m = assess(decisions)
-        if m.unknown and not m.settled:
+        # Not only unknown facts: a single evaluation naming both sides can
+        # leave M21-1's reading open with every fact known.
+        if not m.settled:
             result = None
         else:
             evaluation, _ = evaluate_for_report(decisions)
@@ -667,6 +683,8 @@ def _check_shape(case_id: str, raw: dict[str, Any]) -> None:
             raise bad(f"trace entry [{index}] has an unknown actor {e.get('actor')!r}")
         if not (isinstance(e.get("action"), str) and isinstance(e.get("detail"), str)):
             raise bad(f"trace entry [{index}] action and detail must be text")
+        if e.get("action") not in TRACE_ACTIONS:
+            raise bad(f"trace entry [{index}] has an action no Recheck node writes: {e.get('action')[:60]!r}")
         value = e.get("value")
         if not (value is None or isinstance(value, str) or type(value) is int):
             raise bad(f"trace entry [{index}] value must be text, a whole number or null")
