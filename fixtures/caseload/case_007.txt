@@ -2,15 +2,15 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: G. SPECIMEN
-File Number: 00-007-910
-Date of Notification: July 2, 2026
+Name: J. EXAMPLE
+File Number: 00-007-719
+Date of Notification: September 8, 2026
 
                          RATING DECISION
 
-  1. lumbosacral strain .................................. 10%
-  2. obstructive sleep apnea ............................. 50%
-  3. incomplete paralysis of the right sciatic nerve ..... 50%
-  4. incomplete paralysis of the left sciatic nerve ...... 20%
+  1. right lateral epicondylitis ................................. 10%
+  2. allergic rhinitis ........................................... 30%
+  3. left lateral epicondylitis .................................. 10%
+  4. lumbosacral strain .......................................... 20%
 
-COMBINED EVALUATION FOR COMPENSATION: 80%
+COMBINED EVALUATION FOR COMPENSATION: 60%

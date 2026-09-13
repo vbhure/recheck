@@ -1,0 +1,14 @@
+{
+ "classifications": [
+  {
+   "condition": "left cubital tunnel syndrome",
+   "extremity_group": "upper",
+   "confidence": 0.92
+  },
+  {
+   "condition": "right De Quervain's tenosynovitis",
+   "extremity_group": "upper",
+   "confidence": 0.88
+  }
+ ]
+}

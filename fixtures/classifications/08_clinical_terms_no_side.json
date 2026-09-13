@@ -1,12 +1,12 @@
 {
  "classifications": [
   {
-   "condition": "incomplete paralysis of the median nerve",
+   "condition": "cubital tunnel syndrome",
    "extremity_group": "upper",
    "confidence": 0.91
   },
   {
-   "condition": "neuritis of the musculospiral nerve",
+   "condition": "De Quervain's tenosynovitis",
    "extremity_group": "upper",
    "confidence": 0.87
   }

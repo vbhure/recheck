@@ -2,14 +2,15 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: J. TESTCASE
-File Number: 00-018-965
-Date of Notification: March 16, 2026
+Name: H. SPECIMEN
+File Number: 00-018-103
+Date of Notification: January 20, 2026
 
                          RATING DECISION
 
-  1. post-traumatic stress disorder ...................... 70%
-  2. neuritis musculospiral nerve ........................ 10%
-  3. incomplete paralysis median nerve ................... 20%
+  1. lumbosacral strain .......................................... 10%
+  2. left iliotibial band syndrome ............................... 10%
+  3. right iliotibial band syndrome .............................. 10%
+  4. migraine headaches .......................................... 50%
 
-COMBINED EVALUATION FOR COMPENSATION: 80%
+COMBINED EVALUATION FOR COMPENSATION: 70%

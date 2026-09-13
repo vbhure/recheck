@@ -2,22 +2,19 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: M. EXAMPLE
-File Number: 00-013-714
-Date of Notification: November 15, 2026
+Name: A. SPECIMEN
+File Number: 00-013-924
+Date of Notification: March 8, 2026
 
 DECISION
 
-Service connection for lumbosacral strain is granted with an
-evaluation of 40 percent effective January 9, 2026.
-
-Service connection for migraine headaches is granted with an
-evaluation of 30 percent effective January 9, 2026.
-
-Service connection for neuritis of the right musculospiral nerve is granted with an
+Service connection for right patellofemoral pain syndrome is granted with an
 evaluation of 10 percent effective January 9, 2026.
 
-Service connection for neuritis of the left musculospiral nerve is granted with an
-evaluation of 10 percent effective January 9, 2026.
+Service connection for left patellofemoral pain syndrome is granted with an
+evaluation of 20 percent effective January 9, 2026.
 
-Your combined evaluation for compensation is 70 percent.
+Service connection for obstructive sleep apnea is granted with an
+evaluation of 50 percent effective January 9, 2026.
+
+Your combined evaluation for compensation is 60 percent.
