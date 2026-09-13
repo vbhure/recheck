@@ -183,6 +183,20 @@ def test_a_heading_line_directly_above_a_rating_still_ends_the_letterhead():
     assert read(letter) == [("Left cubital tunnel syndrome", 20)]
 
 
+def test_a_heading_word_inside_a_wrapped_sentence_does_not_leave_a_fragment_name():
+    """Before: "strain", with no anatomy, read at 10%."""
+    letter = prose("Service connection for\nLEFT KNEE - SEE EVIDENCE\nstrain is granted with an evaluation of 10 percent.",
+                   stated=10)
+    assert "no lower-case letters" in refused(letter)
+
+
+def test_a_heading_between_letterhead_and_a_lead_in_sentence_still_reads():
+    """Control: the lead-in marks where the condition name starts."""
+    letter = ("Regional Office\nDECISION\nservice connection for tinnitus is granted with an evaluation of 10 percent.\n"
+              "Your combined evaluation for compensation is 10 percent.\n")
+    assert read(letter) == [("tinnitus", 10)]
+
+
 def test_a_condition_name_starting_with_a_rating_verb_is_refused_however_it_arose():
     """_NOT_A_NAME_START is the guard, whatever split the sentence."""
     assert "mid-sentence" in refused(prose(

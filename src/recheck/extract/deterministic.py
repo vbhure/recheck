@@ -465,17 +465,19 @@ def _blocks(text: str) -> list[tuple[str, bool]]:
                 blocks.append((line, False))
             unfinished = False
             continue
-        heading = False
-        parenthetical = False
+        heading = parenthetical = continues = False
         if re.search(r"[a-z]", line):
             joins = True
         else:
             heading = bool(_HEADING_WORD.search(line))
             parenthetical = bool(_PARENTHETICAL_LINE.match(line))
             following = lines[number + 1].lstrip() if number + 1 < len(lines) else ""
-            joins = not heading and (
-                bool(re.match(r"[a-z]", following)) or (parenthetical and unfinished and bool(current))
-            )
+            continues = bool(re.match(r"[a-z]", following))
+            joins = not heading and (continues or (parenthetical and unfinished and bool(current)))
+        # A heading word between an unfinished line and one that continues in
+        # lower case ("Service connection for" / "LEFT KNEE - SEE EVIDENCE" /
+        # "strain is granted") may be inside the sentence after all.
+        mid_sentence_heading = heading and unfinished and continues
         if joins:
             if not current:
                 soft = unfinished
@@ -487,7 +489,8 @@ def _blocks(text: str) -> list[tuple[str, bool]]:
             blocks.append((line, unfinished and not heading))
         # A parenthetical that stands alone qualifies the text above it; it
         # does not start a condition name below it.
-        unfinished = not heading and not (parenthetical and not joins) and not _SENTENCE_END.search(stripped)
+        unfinished = ((not heading or mid_sentence_heading) and not (parenthetical and not joins)
+                      and not _SENTENCE_END.search(stripped))
     if current:
         blocks.append((" ".join(current), soft))
     return blocks
