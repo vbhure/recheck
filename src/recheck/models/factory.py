@@ -26,16 +26,31 @@ Design constraints, all of them load-bearing:
   FAILURE IS UNIFORM. Timeout, API error, unavailable provider, malformed
   output and unsupported content all produce the same outcome: the affected
   conditions route to human review. Nothing is fabricated or substituted.
+
+  PREFLIGHT SHOWS WHERE THE CALL GOES. A URL Recheck prints shows the host
+  it parses to, with any user:password replaced; a URL that does not parse
+  unambiguously is refused, not shown. An anthropic endpoint override
+  (ANTHROPIC_BASE_URL) is refused unless it is https or loopback. For bedrock
+  the endpoint is the one botocore itself resolves - from its variables, a
+  profile endpoint_url or a [services] section - and it must be the regional
+  https AWS endpoint. The provider SDK sends the credential to it.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+from urllib.parse import SplitResult, urlsplit
 
 DEFAULT_TIMEOUT_S = 30.0
-DEFAULT_MAX_TOKENS = 1024
+# Sized for the largest answer the schema admits: 40 classifications echoing
+# 200-character names is about 10,600 characters of JSON, some 3,500 tokens.
+# At the earlier 1,024 such a letter was sent and truncated every time - a
+# paid call that could only end "unknown" (red team MODEL-RT-P2P6-10). A cap
+# is not a spend: a provider bills the tokens produced, not the ceiling.
+DEFAULT_MAX_TOKENS = 4096
 # Classification is a labelling task, not a generative one. Low temperature
 # is about reproducibility, not quality.
 DEFAULT_TEMPERATURE = 0.0
@@ -68,7 +83,108 @@ class ProviderError(RuntimeError):
 
 
 class ProviderNotConfigured(ProviderError):
-    """Configuration is absent or invalid. Raised before any network use."""
+    """Configuration is absent or invalid. Raised before any inference call.
+
+    Not "before any network use": resolving a credential can itself be a
+    network lookup (a container credential endpoint the operator configured,
+    or EC2 instance metadata when they opt in - see preflight).
+    """
+
+
+UNSHOWN_URL = "(not shown: the URL does not parse unambiguously)"
+
+
+def _parse_url(url: str) -> SplitResult | None:
+    """The URL split into parts, or None if clients could disagree on its host.
+
+    Displaying a URL and checking it both rest on this, so what preflight
+    shows is the host the request goes to. A URL is refused when it has no
+    scheme or host, a port that is not a number, more than one "@" in its
+    authority (an unencoded "@" in a password), or a character outside
+    printable ASCII or a backslash - which some HTTP clients read as the end
+    of the host, so "https://attacker.example\\@api.anthropic.com" would be
+    shown as one host and sent to another.
+    """
+    if not url or any(not ("!" <= ch <= "~") or ch == "\\" for ch in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        parts.port  # raises ValueError for a port that is not a number
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname or parts.netloc.count("@") > 1:
+        return None
+    return parts
+
+
+def _redact_url(url: str) -> str:
+    """The URL as it parses: scheme, host, port and path, with any
+    user:password replaced by ***. A URL that does not parse unambiguously is
+    not shown at all.
+
+    RECHECK_OLLAMA_HOST=https://vso:PASSWORD@host:443 was printed whole by
+    preflight and by every live audit (red team SECRETS-F8). The first fix
+    masked the text before the last "@" without a parser, and so could show a
+    host the request never goes to: botocore sends
+    https://attacker.example/@bedrock-runtime.us-west-2.amazonaws.com to
+    attacker.example, and preflight showed
+    https://***@bedrock-runtime.us-west-2.amazonaws.com. So the host shown is
+    the parsed one; a path holding "@" is shown as "/...", and the query and
+    fragment, where tokens travel, are not shown.
+    """
+    parts = _parse_url(url)
+    if parts is None:
+        return UNSHOWN_URL
+    host = f"[{parts.hostname}]" if ":" in (parts.hostname or "") else parts.hostname
+    userinfo = "***@" if "@" in parts.netloc else ""
+    port = f":{parts.port}" if parts.port is not None else ""
+    path = "/..." if "@" in parts.path else parts.path
+    return f"{parts.scheme}://{userinfo}{host}{port}{path}"
+
+
+def _is_https_or_loopback(url: str) -> bool:
+    """https to any host, or http to this machine. Anything ambiguous is neither."""
+    parts = _parse_url(url)
+    if parts is None:
+        return False
+    if parts.scheme == "https":
+        return True
+    if parts.scheme != "http":
+        return False
+    try:
+        return parts.hostname == "localhost" or ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
+
+
+# BedrockModel's region when none is configured (strands.models.bedrock).
+DEFAULT_BEDROCK_REGION = "us-west-2"
+
+
+def _is_regional_bedrock_endpoint(url: str, region: str) -> bool:
+    """https to bedrock-runtime in this region on an AWS domain, and nothing else.
+
+    The standard, FIPS and dual-stack forms, including the China partition,
+    are the ones botocore resolves without an override. A VPC endpoint or a
+    gateway fails this check: preflight cannot tell one from an attacker's
+    host, and failing closed costs the operator only a refusal.
+    """
+    parts = _parse_url(url)
+    if parts is None:
+        return False
+    hosts = {f"bedrock-runtime{fips}.{region.lower()}.{domain}"
+             for fips in ("", "-fips") for domain in ("amazonaws.com", "amazonaws.com.cn", "api.aws")}
+    return (parts.scheme == "https" and parts.hostname in hosts and "@" not in parts.netloc
+            and parts.port in (None, 443) and parts.path in ("", "/") and not parts.query and not parts.fragment)
+
+
+# The SDK variables that move each provider's endpoint, in the SDK's order of
+# precedence. Preflight said "provider default" while ANTHROPIC_BASE_URL sent
+# the API key to http://attacker.example (red team SECRETS-F9).
+ENDPOINT_VARIABLES: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_BASE_URL",),
+    "bedrock": ("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL"),
+}
 
 
 @dataclass(frozen=True)
@@ -80,10 +196,15 @@ class ProviderConfig:
     timeout_s: float = DEFAULT_TIMEOUT_S
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = DEFAULT_TEMPERATURE
+    endpoint: str | None = None           # an SDK endpoint override, if one is set
+    endpoint_variable: str | None = None  # the variable that set it
 
     def describe(self) -> str:
         """A one-line summary safe to print. Contains no credential material."""
-        where = self.region or self.host or "provider default"
+        parts = [p for p in (self.region, _redact_url(self.host) if self.host else None) if p]
+        if self.endpoint:
+            parts.append(f"endpoint {_redact_url(self.endpoint)} from {self.endpoint_variable}")
+        where = ", ".join(parts) or "provider default"
         return (
             f"{self.provider}:{self.model_id} ({where}, timeout {self.timeout_s:g}s, "
             f"max_tokens {self.max_tokens}, temperature {self.temperature:g})"
@@ -97,6 +218,60 @@ class Check:
     detail: str
 
 
+def _resolve_bedrock_endpoint(config: ProviderConfig) -> tuple[str, str]:
+    """(endpoint URL, region) as botocore resolves them for BedrockModel.
+
+    Reading the override variables ourselves missed what botocore reads and
+    misread what it does read (red team SECRETS-F9): a profile endpoint_url or
+    a [services] section was not seen, and AWS_IGNORE_CONFIGURED_ENDPOINT_URLS
+    = " true" was stripped here but not by botocore, which kept the override.
+    Preflight passed while the signed request went to a plaintext host.
+
+    So botocore resolves it, the way BedrockModel's client will: a fresh
+    session, no explicit endpoint, the region BedrockModel would use. The
+    client is built with placeholder static keys, so no credential is looked
+    up, and with defaults_mode "legacy", so an "auto" mode in the AWS config
+    cannot ask instance metadata for the region (defaults_mode does not move
+    the bedrock-runtime endpoint). Building a client sends no request; only
+    client.meta.endpoint_url is read.
+    """
+    import botocore.session
+    from botocore.config import Config
+
+    session = botocore.session.Session()
+    region = (config.region or session.get_config_variable("region") or os.environ.get("AWS_REGION")
+              or DEFAULT_BEDROCK_REGION)
+    client = session.create_client(
+        "bedrock-runtime",
+        region_name=region,
+        aws_access_key_id="recheck-preflight-placeholder",
+        aws_secret_access_key="recheck-preflight-placeholder",
+        config=Config(defaults_mode="legacy"),
+    )
+    return client.meta.endpoint_url, client.meta.region_name
+
+
+def _bedrock_endpoint_check(config: ProviderConfig) -> Check:
+    """The endpoint check for bedrock: both the override Recheck read and the
+    endpoint botocore resolves must be the regional https AWS endpoint."""
+    try:
+        resolved, region = _resolve_bedrock_endpoint(config)
+    except Exception as exc:  # noqa: BLE001 - a region botocore rejects, botocore missing: not ready either way
+        return Check("endpoint", False,
+                     f"botocore could not resolve the bedrock-runtime endpoint ({type(exc).__name__})")
+    why = (f" - not the regional https AWS endpoint (https://bedrock-runtime.{region}.amazonaws.com), "
+           f"and the AWS SDK sends the signed request to it")
+    if config.endpoint is not None and not _is_regional_bedrock_endpoint(config.endpoint, region):
+        return Check("endpoint", False,
+                     f"overridden by {config.endpoint_variable}: {_redact_url(config.endpoint)}{why}")
+    if not _is_regional_bedrock_endpoint(resolved, region):
+        return Check("endpoint", False,
+                     f"botocore resolves {_redact_url(resolved)} from the AWS configuration (an endpoint "
+                     f"variable, a profile endpoint_url or a [services] section){why}")
+    source = f"overridden by {config.endpoint_variable}" if config.endpoint else "AWS SDK default"
+    return Check("endpoint", True, f"{source}: {_redact_url(resolved)}")
+
+
 def load_config(
     provider: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -104,12 +279,20 @@ def load_config(
     """Build configuration from arguments and environment. No network use.
 
     Environment variables:
-        RECHECK_PROVIDER     bedrock | anthropic | ollama
+        RECHECK_PROVIDER     bedrock | anthropic | ollama - the default for
+                             `recheck preflight` only. audit and sweep call a
+                             live model only when --model is passed, so a
+                             variable alone never starts paid calls.
         RECHECK_MODEL_ID     provider-specific model identifier
         RECHECK_REGION       AWS region (bedrock only)
         RECHECK_OLLAMA_HOST  e.g. http://localhost:11434 (ollama only)
         RECHECK_TIMEOUT_S    wall-clock budget for one classification call
         RECHECK_MAX_TOKENS   output cap
+
+    The provider SDKs' own endpoint overrides (ENDPOINT_VARIABLES) are read so
+    that describe() and preflight can show them; they are not ours to set.
+    For bedrock, preflight also checks the endpoint botocore resolves, which
+    reads the AWS config file too.
 
     Credentials are deliberately NOT read here. Providers resolve their own.
     """
@@ -136,6 +319,17 @@ def load_config(
     if name == "ollama" and host is None:
         host = "http://localhost:11434"
 
+    endpoint = endpoint_variable = None
+    # botocore ignores its endpoint variables when told to, and reads the flag
+    # as botocore.utils.ensure_boolean does: "true" in any case, NOT stripped.
+    # " true" is not true to botocore, so it is not true here either.
+    ignored = name == "bedrock" and str(env.get("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "")).lower() == "true"
+    for variable in () if ignored else ENDPOINT_VARIABLES.get(name, ()):
+        value = (env.get(variable) or "").strip()
+        if value:
+            endpoint, endpoint_variable = value, variable
+            break
+
     return ProviderConfig(
         provider=name,
         model_id=model_id,
@@ -144,6 +338,8 @@ def load_config(
         timeout_s=_positive_float(env, "RECHECK_TIMEOUT_S", DEFAULT_TIMEOUT_S),
         max_tokens=int(_positive_float(env, "RECHECK_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
         temperature=DEFAULT_TEMPERATURE,
+        endpoint=endpoint,
+        endpoint_variable=endpoint_variable,
     )
 
 
@@ -163,14 +359,36 @@ def _positive_float(env: Mapping[str, str], key: str, default: float) -> float:
 def preflight(config: ProviderConfig) -> list[Check]:
     """Verify configuration WITHOUT inference.
 
-    Every check here is free. Credential resolution reads local config and,
-    on some AWS setups, instance metadata; neither is a billable operation
-    and neither invokes a model. No check prints a credential.
+    Every check here is free, and none invokes a model. No check prints a
+    credential.
+
+    AWS credential resolution reads local configuration. It does NOT probe
+    EC2 instance metadata unless the operator opts in with
+    AWS_EC2_METADATA_DISABLED=false: off EC2, botocore's probe of
+    169.254.169.254 was a connection attempt, and a second or two of delay,
+    before a refusal that is meant to need no network (red team SECRETS-F6).
     """
     checks: list[Check] = [
         Check("provider known", True, f"{config.provider}"),
         Check("model id present", bool(config.model_id), config.model_id or "(empty)"),
     ]
+
+    # The endpoint is checked before the SDK import so it is reported whether
+    # or not the SDK is installed: it is configuration, and the credential
+    # follows it.
+    if config.provider == "bedrock":
+        checks.append(_bedrock_endpoint_check(config))
+    elif config.provider in ENDPOINT_VARIABLES:
+        if config.endpoint is None:
+            checks.append(Check("endpoint", True, "provider default"))
+        else:
+            safe = _is_https_or_loopback(config.endpoint)
+            detail = f"overridden by {config.endpoint_variable}: {_redact_url(config.endpoint)}"
+            if _parse_url(config.endpoint) is None:
+                detail += " - it does not parse unambiguously, so where the credential would go cannot be shown"
+            elif not safe:
+                detail += " - not https, so the credential would cross the network unencrypted"
+            checks.append(Check("endpoint", safe, detail))
 
     import_path, class_name, extra, _ = PROVIDERS[config.provider]
     try:
@@ -192,15 +410,23 @@ def preflight(config: ProviderConfig) -> list[Check]:
         else:
             checks.append(Check("region configured", True, config.region))
         try:
-            import boto3
+            import botocore.session
 
-            creds = boto3.Session(region_name=config.region).get_credentials()
+            session = botocore.session.Session()
+            imds = os.environ.get("AWS_EC2_METADATA_DISABLED", "").strip().lower() == "false"
+            if not imds:
+                session.get_component("credential_provider").remove("iam-role")
+            creds = session.get_credentials()
             if creds is None:
+                not_consulted = "" if imds else (
+                    " (instance metadata was not consulted; on EC2 set AWS_EC2_METADATA_DISABLED=false "
+                    "to allow it)"
+                )
                 checks.append(
                     Check(
                         "credentials resolvable",
                         False,
-                        "the AWS credential chain resolved nothing; run `aws configure`",
+                        f"the AWS credential chain resolved nothing; run `aws configure`{not_consulted}",
                     )
                 )
             else:
@@ -222,7 +448,15 @@ def preflight(config: ProviderConfig) -> list[Check]:
         )
 
     elif config.provider == "ollama":
-        checks.append(Check("host configured", bool(config.host), config.host or "(none)"))
+        if not config.host:
+            checks.append(Check("host configured", False, "(none)"))
+        elif _parse_url(config.host) is None:
+            # Refused, not shown: a host that does not parse unambiguously
+            # cannot be displayed truthfully.
+            checks.append(Check("host configured", False,
+                                f"{UNSHOWN_URL}; give RECHECK_OLLAMA_HOST as scheme://host:port"))
+        else:
+            checks.append(Check("host configured", True, _redact_url(config.host)))
         checks.append(
             Check("credentials resolvable", True, "not applicable - local provider")
         )
@@ -288,8 +522,9 @@ def build_agent_factory(
     """Return a factory producing the classification agent for this provider.
 
     The factory carries `timeout_s`; recheck.classify enforces it as a
-    wall-clock budget around the one structured call (asyncio.wait_for plus
-    Strands' cancel_signal), and bounds turns with limits={"turns": 1}.
+    wall-clock budget around the one structured call (the call runs on its
+    own thread and event loop, and is told to stop through Strands'
+    cancel_signal), and bounds turns with limits={"turns": 1}.
 
     Raises ProviderNotConfigured eagerly, before any run begins, so a
     misconfiguration surfaces immediately rather than mid-workflow.
