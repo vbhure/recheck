@@ -1,113 +1,103 @@
-"""AI JUSTIFICATION GATE: measure what deterministic parsing actually achieves.
+"""AI JUSTIFICATION GATE: where the deterministic lexicon stops, measured.
 
-Runs the deterministic parser against every fixture letter and compares the
-result to hand-written ground truth. The purpose is to find the honest
-boundary of deterministic parsing BEFORE any model is integrated.
+Recheck uses a model for exactly one judgment - which extremity group a
+condition name belongs to - and only for names the deterministic lexicon
+abstains on. This report measures the lexicon on two sets and prints both,
+because each answers a different question and neither is enough alone:
 
-If this reports full coverage, the correct conclusion is that a model is not
-needed for extraction within the supported input scope, and the product
-architecture should be reassessed accordingly.
+  (a) RATING-SCHEDULE VOCABULARY  fixtures/va_condition_names.json
+      138 diagnostic-code titles from 38 CFR Part 4, labelled by the
+      diagnostic-code range they sit in - labels this project does not
+      control. The schedule's vocabulary is finite, so the lexicon is
+      expected to cover most of it. Where it does, a model call would be
+      waste, and none is made.
+
+  (b) LETTER PHRASINGS  fixtures/va_letter_phrasings.json
+      Clinical, eponymous and colloquial names in the style decision letters
+      use. Labels are INTERNAL - assigned by this project from anatomy, not an
+      external oracle - and entries marked ambiguous are not scored. The
+      lexicon is expected to abstain on most of the arm and leg names here.
+      That residue is the model's job.
+
+On both sets the lexicon must never assert a wrong group. It abstains instead,
+and an abstention costs at most a model call or one question.
+
+No model is run by this report, and nothing here says how accurate a model
+would be on set (b).
 
     python tools/gate_report.py
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-
-from recheck.cfr.rating import evaluate  # noqa: E402
-from recheck.extract.deterministic import (  # noqa: E402
-    candidate_bilateral_pairs,
-    parse,
-)
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LETTERS = ROOT / "fixtures" / "letters"
+sys.path.insert(0, str(ROOT / "src"))
 
-# Hand-written ground truth. Each entry: the ratings a human reader would
-# extract, the stated combined value, and the expected bilateral outcome.
-TRUTH = {
-    "01_tabular": dict(ratings=[60, 20, 10, 10], stated=70, pairs=1, ambiguous=False),
-    "02_prose": dict(ratings=[60, 20, 10, 10], stated=70, pairs=1, ambiguous=False),
-    "03_history_trap": dict(ratings=[60, 20, 10, 10], stated=70, pairs=1, ambiguous=False),
-    "04_cross_bodypart": dict(ratings=[60, 20, 10, 10], stated=70, pairs=1, ambiguous=False),
-    "05_missing_side": dict(ratings=[60, 20, 10, 10], stated=70, pairs=0, ambiguous=True),
-    "06_agrees": dict(ratings=[50, 30], stated=70, pairs=0, ambiguous=False),
-}
+from recheck.extract.deterministic import LEXICON_SIZE, _classify_extremity  # noqa: E402
+
+ABSTAIN = "unrecognised"
+SCHEDULE = ROOT / "fixtures" / "va_condition_names.json"
+PHRASINGS = ROOT / "fixtures" / "va_letter_phrasings.json"
+
+
+def measure(rows: list[dict]) -> dict:
+    scored = [r for r in rows if r["group"] in ("upper", "lower", "none")]
+    out = {"total": len(rows), "scored": len(scored), "excluded": len(rows) - len(scored),
+           "correct": [], "abstained": [], "wrong": []}
+    for row in scored:
+        said = _classify_extremity(row["name"])
+        bucket = "abstained" if said == ABSTAIN else "correct" if said == row["group"] else "wrong"
+        out[bucket].append((row["name"], row["group"], said))
+    return out
+
+
+def _split(entries, limb: bool):
+    return [e for e in entries if (e[1] != "none") == limb]
+
+
+def report(title: str, m: dict) -> None:
+    print("=" * 74)
+    print(title)
+    print("=" * 74)
+    limbs = _split([*m["correct"], *m["abstained"], *m["wrong"]], True)
+    others = _split([*m["correct"], *m["abstained"], *m["wrong"]], False)
+    print(f"names scored: {m['scored']}   (excluded as ambiguous: {m['excluded']})")
+    print(f"  arm or leg:  {len(limbs):>3}   resolved {len(_split(m['correct'], True)):>3}   "
+          f"abstained {len(_split(m['abstained'], True)):>3}")
+    print(f"  neither:     {len(others):>3}   resolved {len(_split(m['correct'], False)):>3}   "
+          f"abstained {len(_split(m['abstained'], False)):>3}")
+    print(f"  all:         {m['scored']:>3}   resolved {len(m['correct']):>3}   "
+          f"abstained {len(m['abstained']):>3}   WRONG {len(m['wrong'])}")
+    for name, truth, said in m["wrong"]:
+        print(f"  >>> WRONG: {name!r} is {truth}, lexicon said {said}")
 
 
 def main() -> int:
-    passes = 0
-    failures: list[str] = []
+    schedule = measure(json.loads(SCHEDULE.read_text(encoding="utf-8")))
+    phrasings = measure(json.loads(PHRASINGS.read_text(encoding="utf-8"))["conditions"])
 
-    for path in sorted(LETTERS.glob("*.txt")):
-        name = path.stem
-        truth = TRUTH.get(name)
-        extraction = parse(path.read_text(encoding="utf-8"))
-        got = sorted((r.percent for r in extraction.ratings), reverse=True)
-        want = sorted(truth["ratings"], reverse=True) if truth else []
-        pairs = candidate_bilateral_pairs(extraction.ratings)
-
-        problems = []
-        if got != want:
-            problems.append(f"ratings {got} != expected {want}")
-        if extraction.stated_combined != truth["stated"]:
-            problems.append(f"stated combined {extraction.stated_combined} != {truth['stated']}")
-        if len(pairs) != truth["pairs"]:
-            problems.append(f"{len(pairs)} bilateral pair(s) detected, expected {truth['pairs']}")
-        if bool(extraction.ambiguities) != truth["ambiguous"]:
-            problems.append(
-                f"ambiguity detected={bool(extraction.ambiguities)}, expected {truth['ambiguous']}"
-            )
-
-        status = "PASS" if not problems else "FAIL"
-        if problems:
-            failures.append(name)
-        else:
-            passes += 1
-
-        print(f"\n{status}  {name}")
-        for rating in extraction.ratings:
-            print(
-                f"      {rating.percent:>3}%  {rating.condition[:52]:<52} "
-                f"[{rating.extremity_group}/{rating.laterality}]"
-            )
-        print(f"      stated combined: {extraction.stated_combined}")
-        if pairs:
-            for i, j in pairs:
-                a, b = extraction.ratings[i], extraction.ratings[j]
-                print(f"      bilateral candidate: {a.condition[:28]} + {b.condition[:28]}")
-        for note in extraction.ambiguities:
-            print(f"      AMBIGUOUS: {note}")
-        if extraction.unparsed_reason:
-            print(f"      UNPARSED: {extraction.unparsed_reason}")
-        for problem in problems:
-            print(f"      >>> {problem}")
-
-        # What the arithmetic says, where extraction succeeded.
-        if extraction.ok and len(pairs) == 1 and not extraction.ambiguities:
-            i, j = pairs[0]
-            pair = [extraction.ratings[i].percent, extraction.ratings[j].percent]
-            ev = evaluate(got, bilateral_pair=pair)
-            verdict = "DISCREPANCY" if ev.final_degree != extraction.stated_combined else "agrees"
-            print(f"      -> recomputed {ev.final_degree}% vs stated {extraction.stated_combined}% ({verdict})")
-        elif extraction.ok and not pairs and not extraction.ambiguities:
-            ev = evaluate(got)
-            verdict = "DISCREPANCY" if ev.final_degree != extraction.stated_combined else "agrees"
-            print(f"      -> recomputed {ev.final_degree}% vs stated {extraction.stated_combined}% ({verdict})")
-
-    total = len(TRUTH)
-    print("\n" + "=" * 68)
-    print(f"DETERMINISTIC COVERAGE: {passes}/{total} letters fully handled")
-    if failures:
-        print(f"deterministic parsing FAILED on: {', '.join(failures)}")
-        print("-> these are the cases a model must earn its place on")
-    else:
-        print("-> deterministic parsing is SUFFICIENT for the supported input scope")
-        print("-> a model is NOT justified for extraction; reassess the architecture")
+    print(f"deterministic lexicon: {LEXICON_SIZE} entries (words, phrases, non-extremity hints)")
+    print()
+    report("(a) RATING-SCHEDULE VOCABULARY - labels: diagnostic-code range (external)", schedule)
+    print("abstained:")
+    for name, truth, _ in schedule["abstained"]:
+        print(f"    {truth:<6} {name}")
+    print("-> the schedule's own vocabulary is resolved deterministically; no model call is spent on it")
+    print()
+    report("(b) LETTER PHRASINGS - labels: internal, authored for this project", phrasings)
+    print("arm and leg names the lexicon abstains on (the classifier's work):")
+    for name, truth, _ in _split(phrasings["abstained"], True):
+        print(f"    {truth:<6} {name}")
+    print("-> clinical, eponymous and colloquial names are outside the schedule's vocabulary;")
+    print("   this residue is where a semantic classifier is used. No live model has been")
+    print("   run against it, so nothing here measures a model's accuracy.")
+    print()
+    wrong = len(schedule["wrong"]) + len(phrasings["wrong"])
+    print(f"wrong-group assertions across both sets: {wrong}")
     return 0
 
 

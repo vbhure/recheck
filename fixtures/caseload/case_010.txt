@@ -2,22 +2,14 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: H. PLACEHOLDER
-File Number: 00-010-614
-Date of Notification: June 14, 2026
+Name: P. TESTCASE
+File Number: 00-010-975
+Date of Notification: May 7, 2026
 
-DECISION
+                         RATING DECISION
 
-Service connection for obstructive sleep apnea is granted with an
-evaluation of 50 percent effective January 9, 2026.
+  1. Lumbosacral strain .......................................... 20%
+  2. Radiculopathy, left lower extremity, associated with lumbosacral strain ... 20%
+  3. Radiculopathy, right lower extremity, associated with lumbosacral strain ... 10%
 
-Service connection for plantar fasciitis of the right foot is granted with an
-evaluation of 30 percent effective January 9, 2026.
-
-Service connection for lumbosacral strain is granted with an
-evaluation of 10 percent effective January 9, 2026.
-
-Service connection for plantar fasciitis of the left foot is granted with an
-evaluation of 30 percent effective January 9, 2026.
-
-Your combined evaluation for compensation is 80 percent.
+COMBINED EVALUATION FOR COMPENSATION: 50%

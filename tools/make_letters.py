@@ -14,6 +14,8 @@ Formats included:
   04  cross_bodypart   - bilateral pair spanning different body parts
   05  missing_side     - laterality genuinely absent from the text
   06  agrees           - control case where the VA's arithmetic is correct
+  07  clinical_terms   - clinical names outside the schedule's vocabulary, sides stated
+  08  clinical_terms_no_side - the same letter with no side stated
 """
 
 from __future__ import annotations
@@ -171,12 +173,37 @@ COMBINED EVALUATION FOR COMPENSATION: 70%
 """
 
 
-# The two letters below use REAL condition names from the rating schedule in
-# 38 CFR Part 4 (DC 8515 median nerve, DC 8514 musculospiral/radial nerve).
-# The deterministic lexicon abstains on both, so these are the letters where
-# the semantic classifier is genuinely load-bearing rather than decorative.
+# The two letters below use condition names the way decision letters actually
+# write them - clinical names that are NOT the rating schedule's own
+# vocabulary. The deterministic lexicon covers the schedule's anatomy (median
+# nerve, sciatic nerve, humerus, ...), so a schedule name would never reach the
+# classifier. These two names contain no lexicon word, so the semantic
+# classifier is genuinely load-bearing here rather than decorative.
+#
+# Evaluations are ones the schedule can produce for how these conditions are
+# rated (38 CFR Part 4, eCFR text):
+#   cubital tunnel syndrome      ulnar nerve entrapment at the elbow, rated by
+#                                analogy to DC 8516 ulnar nerve: incomplete
+#                                paralysis mild 10/10, moderate 30 major /
+#                                20 minor. 20% on the left is moderate, minor
+#                                (dominant) extremity.
+#   De Quervain's tenosynovitis  DC 5024 tenosynovitis, rated on limitation of
+#                                motion of the wrist, DC 5215: 10% major or minor.
+#
+# Letter 07 states the sides INSIDE the condition names, where the
+# deterministic side reader looks. Recomputed by hand, 38 CFR 4.25 / 4.26:
+#   bilateral factor, upper extremities (left 20, right 10):
+#     20 combined with 10 = 20 + 80 x 0.10 = 28; add 10% of 28 = 2.8 -> 30.8 -> 31
+#   60, 31, 10 in order of severity:
+#     60 + 40 x 0.31 = 72.4 -> 72; 72 + 28 x 0.10 = 74.8 -> 75
+#   combined value 75 -> final degree 80 (values ending in 5 round up)
+#   without 4.26: 60, 20, 10, 10 -> 68 -> 71.2 -> 71 -> 73.9 -> 74 -> 70,
+#   which is what the letter states.
+# Letter 08 is the same letter with no side stated: the classifier can say
+# both conditions are of an arm, but only a reviewer can say which arm, and
+# the answer moves the result between 70 and 80.
 
-LETTERS["07_nerve_terminology"] = f"""{BANNER}
+LETTERS["07_clinical_terms"] = f"""{BANNER}
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
@@ -189,11 +216,11 @@ DECISION
 Service connection for post-traumatic stress disorder is granted with an
 evaluation of 60 percent effective May 4, 2026.
 
-Service connection for incomplete paralysis of the left median nerve is
-granted with an evaluation of 20 percent effective May 4, 2026.
+Service connection for left cubital tunnel syndrome is granted with an
+evaluation of 20 percent effective May 4, 2026.
 
-Service connection for neuritis of the right musculospiral nerve is granted
-with an evaluation of 10 percent effective May 4, 2026.
+Service connection for right De Quervain's tenosynovitis is granted with an
+evaluation of 10 percent effective May 4, 2026.
 
 Service connection for tinnitus is granted with an evaluation of 10 percent
 effective May 4, 2026.
@@ -201,7 +228,7 @@ effective May 4, 2026.
 Your combined evaluation for compensation is 70 percent.
 """
 
-LETTERS["08_nerve_no_side"] = f"""{BANNER}
+LETTERS["08_clinical_terms_no_side"] = f"""{BANNER}
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
@@ -214,11 +241,11 @@ DECISION
 Service connection for post-traumatic stress disorder is granted with an
 evaluation of 60 percent effective June 1, 2026.
 
-Service connection for incomplete paralysis of the median nerve is granted
-with an evaluation of 20 percent effective June 1, 2026.
+Service connection for cubital tunnel syndrome is granted with an
+evaluation of 20 percent effective June 1, 2026.
 
-Service connection for neuritis of the musculospiral nerve is granted with
-an evaluation of 10 percent effective June 1, 2026.
+Service connection for De Quervain's tenosynovitis is granted with an
+evaluation of 10 percent effective June 1, 2026.
 
 Service connection for tinnitus is granted with an evaluation of 10 percent
 effective June 1, 2026.

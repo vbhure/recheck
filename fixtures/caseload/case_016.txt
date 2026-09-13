@@ -2,19 +2,14 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: M. PLACEHOLDER
-File Number: 00-016-248
-Date of Notification: February 12, 2026
+Name: D. EXAMPLE
+File Number: 00-016-576
+Date of Notification: March 14, 2026
 
-DECISION
+                         RATING DECISION
 
-Service connection for incomplete paralysis of the left sciatic nerve is granted with an
-evaluation of 40 percent effective January 9, 2026.
+  1. tinnitus .................................................... 10%
+  2. radiculopathy of the left lower extremity ................... 20%
+  3. radiculopathy of the right lower extremity .................. 40%
 
-Service connection for post-traumatic stress disorder is granted with an
-evaluation of 70 percent effective January 9, 2026.
-
-Service connection for incomplete paralysis of the right sciatic nerve is granted with an
-evaluation of 40 percent effective January 9, 2026.
-
-Your combined evaluation for compensation is 90 percent.
+COMBINED EVALUATION FOR COMPENSATION: 60%

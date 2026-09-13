@@ -21,24 +21,101 @@ ExtremityGroup = Literal["upper", "lower", "none", "unrecognised"]
 
 # 4.26(a): "arms" and "legs" mean the upper and lower extremities AS A WHOLE,
 # so a wrist and a forearm belong to the same extremity group.
+#
+# The vocabulary is the rating schedule's OWN, checked against the eCFR text
+# of 38 CFR Part 4: diagnostic-code titles, table headings, the named bones of
+# the extremity tables and the named peripheral nerves. That vocabulary is
+# finite, so deterministic code covers it and no model call is spent on it.
+# The model is for what the schedule does not say - the clinical, eponymous
+# and colloquial names letters actually use ("cubital tunnel syndrome").
+#
+# A word goes in only if it names ONE extremity group wherever it appears.
+# Left out on purpose, each because it also names something else:
+#   musculocutaneous  DC 8517 is an arm nerve, DC 8522 a leg nerve
+#   median, radial    "median sternotomy", "radial keratotomy" (phrase only)
+#   femoral           "femoral hernia" is not a leg disability (phrase only)
+#   obturator         "obturator hernia" (phrase only)
+#   circumflex        the circumflex coronary artery (phrase only)
+#   semilunar         the heart's semilunar valves; the wrist's semilunar bone
+#   tarsal            the tarsal plate of the eyelid
+#   pronation, supination (DC 5213)  both are also movements of the foot
+#   biceps, triceps   biceps femoris and triceps surae are leg muscles
+#   ilio-inguinal     DC 8530 sits with the leg nerves, but the nerve serves
+#                     the groin; abstaining costs at most one question
+#   muscle group numerals (38 CFR 4.73)  matched as substrings, "muscle group
+#                     i" is also the start of "muscle group ix" and "muscle
+#                     group injury", and XIX-XXIII are the torso and neck
 UPPER_TERMS = {
-    "arm", "arms", "forearm", "forearms", "elbow", "wrist", "wrists", "hand",
-    "hands", "finger", "fingers", "thumb", "shoulder",
+    # plain words for the arm
+    "arm", "arms", "forearm", "forearms", "elbow", "elbows", "wrist", "wrists",
+    "hand", "hands", "finger", "fingers", "thumb", "thumbs", "shoulder",
+    "shoulders",
+    # bones and joints of the shoulder and arm tables, DC 5200-5230; clavicle
+    # and scapula are rated there with major/minor values (DC 5203)
+    "scapulohumeral", "humerus", "humeral", "clavicle", "scapula", "radius",
+    "ulna", "ulnar",
+    # amputation of digits, DC 5126-5156, is measured at the metacarpal
+    "metacarpal",
+    # DC 8514 / 8614 / 8714 musculospiral (radial) nerve
+    "musculospiral",
 }
 LOWER_TERMS = {
-    "leg", "legs", "thigh", "knee", "knees", "ankle", "ankles", "foot", "feet",
-    "toe", "toes", "hip",
+    # plain words for the leg
+    "leg", "legs", "thigh", "thighs", "knee", "knees", "ankle", "ankles",
+    "foot", "feet", "toe", "toes", "hip", "hips",
+    # bones and joints of the hip, knee, ankle and foot tables, DC 5250-5284
+    "femur", "tibia", "tibial", "fibula", "patella", "patellar",
+    "astragalus", "astragalectomy", "subastragalar", "calcis", "metatarsal",
+    "metatarsalgia", "hallux", "flatfoot", "forefoot", "acetabulum",
+    # DC 5269 plantar fasciitis; DC 5262 "medial tibial stress syndrome
+    # (MTSS), or shin splints"
+    "plantar", "shin",
+    # DC 8520-8525, 8527 and their neuritis (86xx) and neuralgia (87xx) forms:
+    # sciatic, external / internal popliteal, superficial / deep peroneal,
+    # anterior / posterior tibial, internal saphenous
+    "sciatic", "popliteal", "peroneal", "saphenous",
 }
-UPPER_PHRASES = ("upper extremity", "upper extremities")
-LOWER_PHRASES = ("lower extremity", "lower extremities")
+UPPER_PHRASES = (
+    "upper extremity", "upper extremities",
+    # DC 8510-8513 upper, middle, lower and all radicular groups - the
+    # schedule has radicular groups only for the arm
+    "radicular group",
+    # DC 8515, 8518, 8519 (and 86xx / 87xx)
+    "median nerve", "circumflex nerve", "long thoracic nerve",
+)
+LOWER_PHRASES = (
+    "lower extremity", "lower extremities",
+    # DC 5258 / 5259 "Cartilage, semilunar" (the knee's menisci)
+    "cartilage, semilunar", "semilunar cartilage",
+    # DC 5263; DC 5278 "Claw foot (pes cavus)"; "pes planus" is 4.26(a)'s
+    # own example of a disability of the foot
+    "genu recurvatum", "pes cavus", "pes planus",
+    # DC 8526 anterior crural (femoral) nerve; DC 8528 obturator nerve
+    "anterior crural", "obturator nerve",
+)
 
 # Conditions that are never extremity disabilities - but only when nothing in
 # the name points at an arm or a leg. "Radiculopathy, right lower extremity,
 # associated with lumbosacral strain" is a leg disability; checking these
 # hints first used to call it "none" and silently drop a 4.26 pair.
+#
+# Hints are substrings, so each names a condition or an organ, not a region.
+# The bare "lumbosacral" used to be one: it called "lumbosacral radiculopathy"
+# - a leg disability rated under the sciatic nerve - "none". The hint is now
+# the DC 5237 title, "lumbosacral or cervical strain".
 NON_EXTREMITY_HINTS = (
-    "tinnitus", "post-traumatic stress", "ptsd", "hearing", "migraine",
-    "lumbosacral", "spine", "sleep apnea", "diabetes",
+    "tinnitus", "post-traumatic stress", "posttraumatic stress", "ptsd",
+    "hearing", "migraine", "lumbosacral strain", "cervical strain", "spine",
+    "sleep apnea", "diabetes",
+    # ear and other sense organs, 38 CFR 4.87 and 4.87a (DC 6200-6276)
+    "otitis", "otosclerosis", "vestibular", "meniere", "auricle", "tympanic",
+    "smell", "taste",
+    # nose, sinuses and lungs, 38 CFR 4.97 (DC 6510-6847)
+    "sinusitis", "rhinitis", "asthma", "bronchitis", "lung", "pulmonary",
+    "pneumonitis", "pneumoconiosis", "asbestosis", "pleural",
+    "kyphoscoliosis", "pectus", "chest wall",
+    # mental disorders, 38 CFR 4.130 (DC 9201-9440)
+    "schizophreni", "obsessive compulsive", "depressive", "anxiety", "bipolar",
 )
 
 # Clauses that name a DIFFERENT condition the rated one is linked to. The
@@ -70,7 +147,10 @@ def linked_clause(condition: str) -> str:
     match = _LINKED_CLAUSE.search(text)
     return match.group(0) if match else ""
 
-LEXICON_SIZE = len(UPPER_TERMS) + len(LOWER_TERMS) + len(UPPER_PHRASES) + len(LOWER_PHRASES)
+LEXICON_SIZE = (
+    len(UPPER_TERMS) + len(LOWER_TERMS) + len(UPPER_PHRASES) + len(LOWER_PHRASES)
+    + len(NON_EXTREMITY_HINTS)
+)
 
 # Percentages after these headings describe rating CRITERIA, not the
 # veteran's assigned evaluations. Matched only as a heading on its own line:

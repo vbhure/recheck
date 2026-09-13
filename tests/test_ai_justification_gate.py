@@ -1,150 +1,304 @@
-"""AI JUSTIFICATION GATE - evidence for where the model is and is not used.
+"""AI JUSTIFICATION GATE - where the model is, and is not, worth a call.
 
-Recheck refuses to use a language model anywhere deterministic code is
-adequate. These tests are the standing, regression-protected proof of where
-that line falls.
+Recheck uses a model for one judgment only: which extremity group a condition
+name belongs to, for names the deterministic lexicon abstains on. This file is
+the standing evidence for where that line falls. It rests on two
+measurements, because an earlier version rested on one and it did not hold.
 
-WHAT IS CLAIMED, PRECISELY:
+WHAT WENT WRONG BEFORE. The gate measured a 29-word lexicon against 138
+rating-schedule titles, found it resolved 22 (15.9%), and offered that as the
+case for a model. But the schedule is a closed, enumerable list: a lexicon of
+the schedule's own anatomy covers it. The low number showed only that the
+lexicon was small. And across the whole caseload sweep the model's
+contribution came down to three schedule words (median, musculospiral,
+sciatic) that belonged in the lexicon all along.
 
-1. Extraction of percentages and combined values is deterministic.
-   The parser handles all six heterogeneous fixture letters - tabular, prose,
-   a historical-percentage trap, a cross-body-part pair, missing laterality,
-   and a no-discrepancy control. No model is used.
-   This evidence is CIRCULAR by construction: the fixtures and the parser
-   were written together. It establishes sufficiency for the supported input
-   scope. It says nothing about letters we have not seen.
+(a) RATING-SCHEDULE VOCABULARY - fixtures/va_condition_names.json
+    138 titles from 38 CFR Part 4, labelled by diagnostic-code range: labels
+    this project does not control. The lexicon now carries the schedule's
+    anatomy (bones, joints, named peripheral nerves, the extremity tables'
+    headings - every entry checked against the eCFR text, see
+    recheck.extract.deterministic). Measured:
+        arm or leg names   90: 83 resolved,  7 abstained, 0 wrong
+        other names        48: 30 resolved, 18 abstained, 0 wrong
+        all               138: 113 resolved (81.9%), 25 abstained, 0 wrong
+    CLAIM: the schedule's vocabulary does not need a model, and none is used
+    for it. The 7 arm/leg abstentions are deliberate: musculocutaneous names
+    an arm nerve (DC 8517) and a leg nerve (DC 8522); ilio-inguinal serves the
+    groin; pronation and supination are also foot movements.
 
-2. The CURRENT LEXICAL BASELINE has low coverage of real VA terminology.
-   Measured non-circularly against 138 real condition names from the rating
-   schedule in 38 CFR Part 4, labeled by diagnostic-code range - an oracle
-   this project does not control - the 29-term lexicon commits to a group
-   for 22 names and abstains on 116. It asserts a wrong group zero times.
+(b) LETTER PHRASINGS - fixtures/va_letter_phrasings.json
+    70 names in the style letters use - clinical, eponymous, colloquial
+    ("cubital tunnel syndrome", "Morton's neuroma", "meralgia paresthetica").
+    LABELS ARE INTERNAL: assigned by this project from anatomy, written by the
+    same project that maintains the lexicon, and not an external oracle. Four
+    entries anatomy cannot settle (Raynaud's, tinea pedis, ganglion cyst,
+    peripheral neuropathy) are marked ambiguous and not scored. Measured:
+        arm or leg names   47:  8 resolved, 39 abstained (83%), 0 wrong
+        other names        19:  8 resolved, 11 abstained,       0 wrong
+    CLAIM: most arm and leg names a letter actually uses are outside the
+    schedule's vocabulary, so a deterministic lexicon of the schedule abstains
+    on them. That residue is the model's job.
 
-WHAT IS NOT CLAIMED:
-   That no deterministic approach could solve this. A large curated
-   anatomical ontology, or a mapping onto an external terminology such as
-   SNOMED CT, might well achieve high coverage. That is a different system
-   with an external dependency and a maintenance burden, and it is not what
-   this project has. The honest statement is narrow: THIS lexical baseline
-   does not scale to the terminology tested, which is why a semantic
-   classifier is used for the residue.
+WHAT IS NOT CLAIMED. That a model classifies set (b) correctly: no live model
+has been run, and every "AI" decision in the fixtures is a replayed fixture.
+That no deterministic approach could cover set (b): a large clinical
+terminology might. That set (b) is representative of real letters: it was
+written for this project.
 
-The measured properties that make the split safe:
-   - the deterministic layer never asserts a wrong group, so its positives
-     can be trusted without a model call
-   - the model's role is confined to extremity group and laterality
-   - the model can express neither a percentage nor a combined rating,
-     because those fields do not exist in its schema
-   - genuine ambiguity goes to a human, never to the model
+THE SAFETY PROPERTIES, on both sets:
+    - the lexicon never asserts a wrong group; it abstains instead, because a
+      wrong "upper" or "lower" feeds 38 CFR 4.26 with no model call and no
+      question;
+    - the lexicon never says "none" for a name containing arm, leg or
+      peripheral-nerve vocabulary (the same markers that veto a model's
+      "none"), because "not an arm or leg" silently removes a 4.26 pair;
+    - it asserts no group for a name anatomy does not settle.
+
+The bounds below are tolerant, so adding a correct term does not break the
+build; the zero-wrong assertions are exact.
 """
 
+from __future__ import annotations
+
 import json
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
-from recheck.extract.deterministic import LEXICON_SIZE, _classify_extremity
+from recheck.classify import EXTREMITY_MARKERS
+from recheck.extract.deterministic import _classify_extremity
+from recheck.schema import ClassificationBatch
 
-FIXTURES = pathlib.Path(__file__).parent.parent / "fixtures"
-CONDITIONS = json.loads((FIXTURES / "va_condition_names.json").read_text())
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+FIXTURES = ROOT / "fixtures"
+SCHEDULE = json.loads((FIXTURES / "va_condition_names.json").read_text(encoding="utf-8"))
+PHRASINGS_FILE = json.loads((FIXTURES / "va_letter_phrasings.json").read_text(encoding="utf-8"))
+PHRASINGS = PHRASINGS_FILE["conditions"]
 
 # The value the lexicon returns when it has no opinion. Distinct from "none",
-# which is a positive finding that a condition is not an extremity disability.
+# which is a positive finding that a condition is not of an arm or leg.
 ABSTAIN = "unrecognised"
-
-# Measured baseline at the time the gate was established.
-BASELINE_COVERAGE = 22 / 138
-TOLERANCE = 0.08
+LIMB = ("upper", "lower")
 
 
-def _coverage() -> float:
-    """Fraction of real condition names the lexicon classifies CORRECTLY."""
-    correct = sum(1 for c in CONDITIONS if _classify_extremity(c["name"]) == c["group"])
-    return correct / len(CONDITIONS)
+def _scored(rows):
+    return [r for r in rows if r["group"] in ("upper", "lower", "none")]
 
 
-def _abstentions() -> int:
-    return sum(1 for c in CONDITIONS if _classify_extremity(c["name"]) == ABSTAIN)
+def _outcomes(rows, groups):
+    """(resolved correctly, abstained, wrong) over rows whose label is in groups."""
+    resolved = abstained = 0
+    wrong = []
+    for row in _scored(rows):
+        if row["group"] not in groups:
+            continue
+        said = _classify_extremity(row["name"])
+        if said == ABSTAIN:
+            abstained += 1
+        elif said == row["group"]:
+            resolved += 1
+        else:
+            wrong.append((row["name"], row["group"], said))
+    return resolved, abstained, wrong
 
 
-def test_dataset_is_real_and_externally_labeled():
-    assert len(CONDITIONS) == 138
-    assert {c["group"] for c in CONDITIONS} == {"upper", "lower", "none"}
+# --------------------------------------------------------------------------
+# The two datasets
+# --------------------------------------------------------------------------
+
+def test_schedule_set_is_the_externally_labelled_138():
+    assert len(SCHEDULE) == 138
+    assert {c["group"] for c in SCHEDULE} == {"upper", "lower", "none"}
+    assert sum(c["group"] in LIMB for c in SCHEDULE) == 90
 
 
-def test_lexical_baseline_has_low_coverage_of_real_terminology():
-    """The narrow, precise justification for a semantic classifier.
-
-    If a future change makes the deterministic layer genuinely sufficient,
-    this test must fail loudly - because the correct response would be to
-    REMOVE the model, not to keep it for appearances.
-    """
-    coverage = _coverage()
-    assert coverage < 0.35, (
-        f"the lexicon now classifies {coverage:.1%} of real condition names correctly. "
-        f"If it has become sufficient, remove the model from the product rather than "
-        f"keeping it, and rewrite this gate."
-    )
-    assert abs(coverage - BASELINE_COVERAGE) < TOLERANCE
+def test_letter_set_discloses_that_its_labels_are_internal():
+    assert 50 <= len(PHRASINGS) <= 70
+    assert "INTERNAL" in PHRASINGS_FILE["_comment"]
+    for row in PHRASINGS:
+        assert row["labels"] == "internal - authored for this project, not an external oracle"
+        assert row["group"] in ("upper", "lower", "none", "ambiguous")
+        assert row["basis"].strip(), f"{row['name']} has no anatomical basis"
+    scored = _scored(PHRASINGS)
+    limb_share = sum(r["group"] in LIMB for r in scored) / len(scored)
+    assert 0.6 <= limb_share <= 0.8, "roughly two thirds arm or leg names, one third not"
 
 
-def test_most_real_terminology_is_outside_the_lexicon():
-    """Abstention, not error, is the dominant outcome."""
-    assert _abstentions() > 0.7 * len(CONDITIONS)
+# --------------------------------------------------------------------------
+# (a) The schedule's vocabulary: deterministic, no model needed
+# --------------------------------------------------------------------------
+
+def test_a_lexicon_covers_the_schedules_arm_and_leg_vocabulary():
+    """Measured 83 of 90. The model is not needed for the schedule's own names."""
+    resolved, abstained, wrong = _outcomes(SCHEDULE, LIMB)
+    assert wrong == []
+    assert resolved >= 78, f"schedule arm/leg coverage fell to {resolved}/90"
+    assert abstained <= 12
 
 
-def test_lexicon_never_asserts_a_wrong_group():
-    """The safety property that lets the deterministic layer be a fast path.
-
-    When the lexicon commits to "upper" or "lower", that answer feeds 4.26
-    pairing without a model call. That is only sound because it is never
-    wrong - it abstains instead. A single false positive here would mean
-    4.26 could be applied to the wrong pair of conditions silently.
-    """
-    wrong = [
-        {"name": c["name"], "truth": c["group"], "said": _classify_extremity(c["name"])}
-        for c in CONDITIONS
-        if _classify_extremity(c["name"]) not in (c["group"], ABSTAIN)
-    ]
-    assert wrong == [], f"lexicon asserted a wrong group for: {wrong[:5]}"
-
-
-def test_abstention_is_distinct_from_a_positive_none():
-    """"I know this is not an extremity" and "I do not know this word" must
-    not be the same value.
-
-    Conflating them caused two real problems: the gate over-reported coverage
-    as 49.3% by counting abstentions as correct "none" answers, and the
-    classifier spent model calls on conditions the lexicon already knew.
-    """
-    assert _classify_extremity("tinnitus") == "none"
-    assert _classify_extremity("Genu recurvatum") == ABSTAIN
-    assert _classify_extremity("right knee, limitation of flexion") == "lower"
-
-
-def test_the_lexicon_is_small_relative_to_the_problem():
-    assert LEXICON_SIZE < 40
-    assert len(CONDITIONS) > 4 * LEXICON_SIZE
+def test_a_lexicon_covers_most_of_the_schedule_overall():
+    """Measured 113 of 138 (81.9%)."""
+    resolved, abstained, wrong = _outcomes(SCHEDULE, ("upper", "lower", "none"))
+    assert wrong == []
+    assert 105 <= resolved <= 138
+    assert resolved / len(SCHEDULE) >= 0.75
 
 
 @pytest.mark.parametrize(
     "name,group",
     [
-        ("Genu recurvatum", "lower"),
-        ("Os calcis or astragalus, malunion", "lower"),
-        ("Astragalectomy", "lower"),
-        ("Scapulohumeral articulation, ankylosis", "upper"),
-        ("Radius and ulna, nonunion", "upper"),
-        ("Median nerve, paralysis", "upper"),
-        ("Sciatic nerve, paralysis", "lower"),
-        ("External popliteal nerve (common peroneal), paralysis", "lower"),
+        ("Scapulohumeral articulation, ankylosis.", "upper"),
+        ("Radius and ulna, nonunion.", "upper"),
+        ("Median nerve, paralysis.", "upper"),
+        ("Neuralgia, musculospiral nerve (radial).", "upper"),
+        ("Upper radicular group, paralysis.", "upper"),
+        ("Genu recurvatum.", "lower"),
+        ("Os calcis or astragalus, malunion.", "lower"),
+        ("Cartilage, semilunar, removal.", "lower"),
+        ("Sciatic nerve, paralysis.", "lower"),
+        ("External popliteal nerve (common peroneal), paralysis.", "lower"),
+        ("Neuritis, anterior crural (femoral) nerve.", "lower"),
     ],
 )
-def test_representative_terms_the_lexicon_abstains_on(name, group):
-    """Real rating-schedule entries requiring anatomical or Latin knowledge.
+def test_a_schedule_names_the_old_gate_sent_to_the_model_are_now_deterministic(name, group):
+    """The old gate pinned these as proof a model was needed. They were not."""
+    assert _classify_extremity(name) == group
 
-    Each generalises semantically but not lexically. These are the named
-    examples used in the README and the demo, so they are pinned here.
-    """
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Musculocutaneous nerve, paralysis.",       # DC 8517 arm, DC 8522 leg
+        "Supination and pronation, impairment.",    # also movements of the foot
+        "Ilio-inguinal nerve, paralysis.",          # listed with the leg nerves; serves the groin
+        "femoral hernia",                           # "femoral" is not always a leg
+        "obturator hernia",
+        "status post median sternotomy",            # "median" is not always the median nerve
+        "radial keratotomy residuals",              # nor "radial" the radial nerve
+        "circumflex artery stenosis",               # a coronary artery
+        "semilunar valve disease",                  # the heart, not the knee
+        "chalazion of the tarsal plate",            # the eyelid, not the foot
+    ],
+)
+def test_a_words_that_name_more_than_one_thing_are_left_to_abstain(name):
+    """Every term was admitted only if it names one extremity group wherever it
+    appears. These are the ones left out, and why."""
+    assert _classify_extremity(name) not in LIMB
+
+
+# --------------------------------------------------------------------------
+# (b) Letter phrasings: the lexicon abstains - the model's job
+# --------------------------------------------------------------------------
+
+def test_b_lexicon_abstains_on_most_arm_and_leg_names_letters_use():
+    """Measured 39 of 47 abstained. This residue is what the classifier is for."""
+    resolved, abstained, wrong = _outcomes(PHRASINGS, LIMB)
+    assert wrong == []
+    assert abstained + resolved == 47
+    assert abstained / (abstained + resolved) >= 0.7, (
+        f"the lexicon now resolves {resolved} of 47 letter-style arm/leg names. If it has become "
+        f"sufficient for the names letters use, the case for the model has to be re-made, not assumed."
+    )
+    assert 33 <= abstained <= 45
+
+
+def test_b_non_extremity_names_are_never_misassigned():
+    """Measured 8 of 19 resolved, 11 abstained. Abstaining here costs a model
+    call, never a wrong pairing."""
+    resolved, abstained, wrong = _outcomes(PHRASINGS, ("none",))
+    assert wrong == []
+    assert resolved + abstained == 19
+
+
+def test_b_ambiguous_names_get_no_group_from_the_lexicon():
+    for row in PHRASINGS:
+        if row["group"] == "ambiguous":
+            assert _classify_extremity(row["name"]) == ABSTAIN, row["name"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["cubital tunnel syndrome", "De Quervain's tenosynovitis", "Morton's neuroma",
+     "meralgia paresthetica", "patellofemoral pain syndrome", "Achilles tendinopathy",
+     "lateral epicondylitis", "iliotibial band syndrome", "tarsal tunnel syndrome",
+     "rotator cuff tendinopathy", "adhesive capsulitis", "Dupuytren's contracture"],
+)
+def test_b_representative_letter_names_the_lexicon_abstains_on(name):
+    """Clinical and eponymous names with no schedule anatomy in them."""
     assert _classify_extremity(name) == ABSTAIN
-    assert group in ("upper", "lower")
+
+
+def test_b_lumbosacral_radiculopathy_is_not_called_none():
+    """A real defect this set found. The hint was the bare word "lumbosacral",
+    which called a leg disability rated under the sciatic nerve "not an arm or
+    leg" and would have dropped its 4.26 pair without asking anyone."""
+    assert _classify_extremity("lumbosacral radiculopathy") == ABSTAIN
+    assert _classify_extremity("Lumbosacral strain") == "none"
+
+
+# --------------------------------------------------------------------------
+# Safety properties on both sets
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("rows", [SCHEDULE, PHRASINGS], ids=["schedule", "letter-phrasings"])
+def test_lexicon_never_asserts_a_wrong_group(rows):
+    """The property that makes the lexicon a safe fast path.
+
+    An "upper" or "lower" from the lexicon feeds 4.26 pairing with no model
+    call and no question, so a single false positive could apply the
+    bilateral factor to the wrong conditions silently.
+    """
+    _, _, wrong = _outcomes(rows, ("upper", "lower", "none"))
+    assert wrong == [], f"lexicon asserted a wrong group for: {wrong[:5]}"
+
+
+@pytest.mark.parametrize("rows", [SCHEDULE, PHRASINGS], ids=["schedule", "letter-phrasings"])
+def test_lexicon_never_says_none_for_a_name_with_extremity_vocabulary(rows):
+    """The same markers that veto a model's "none" (recheck.classify) hold the
+    lexicon to the same standard."""
+    offenders = [r["name"] for r in rows
+                 if _classify_extremity(r["name"]) == "none" and EXTREMITY_MARKERS.search(r["name"].lower())]
+    assert offenders == []
+
+
+def test_abstention_is_distinct_from_a_positive_none():
+    """"I know this is not an arm or leg" and "I do not know this name" must
+    not be the same value; conflating them once over-reported coverage and
+    spent model calls on names the lexicon already knew."""
+    assert _classify_extremity("tinnitus") == "none"
+    assert _classify_extremity("cubital tunnel syndrome") == ABSTAIN
+    assert _classify_extremity("right knee, limitation of flexion") == "lower"
+
+
+# --------------------------------------------------------------------------
+# The showcase letters use names from set (b), not the schedule
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stem", ["07_clinical_terms", "08_clinical_terms_no_side"])
+def test_showcase_letters_need_the_classifier_and_their_fixtures_are_schema_only(stem):
+    from recheck.extract.deterministic import parse
+
+    letter = parse((FIXTURES / "letters" / f"{stem}.txt").read_text(encoding="utf-8"))
+    raw = json.loads((FIXTURES / "classifications" / f"{stem}.json").read_text(encoding="utf-8"))
+    batch = ClassificationBatch.model_validate(raw)  # extra="forbid": no side, no rationale
+    abstained = [r.condition for r in letter.ratings if r.extremity_group == ABSTAIN]
+    assert sorted(c.condition for c in batch.classifications) == sorted(abstained)
+    assert len(abstained) == 2
+    for c in batch.classifications:
+        assert c.extremity_group == "upper" and c.confidence >= 0.85
+    for entry in raw["classifications"]:
+        assert set(entry) == {"condition", "extremity_group", "confidence"}
+
+
+def test_gate_report_runs():
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    result = subprocess.run([sys.executable, str(ROOT / "tools" / "gate_report.py")],
+                            capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert "(a) RATING-SCHEDULE VOCABULARY" in result.stdout
+    assert "(b) LETTER PHRASINGS" in result.stdout
+    assert "wrong-group assertions across both sets: 0" in result.stdout

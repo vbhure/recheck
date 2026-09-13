@@ -2,14 +2,19 @@
 DEPARTMENT OF VETERANS AFFAIRS
 Regional Office
 
-Name: L. SYNTHETIC
-File Number: 00-022-374
-Date of Notification: February 11, 2026
+Name: M. EXAMPLE
+File Number: 00-022-801
+Date of Notification: October 22, 2026
 
-                         RATING DECISION
+DECISION
 
-  1. lumbosacral strain .................................. 40%
-  2. carpal tunnel syndrome of the left wrist ............ 40%
-  3. carpal tunnel syndrome of the right wrist ........... 50%
+Service connection for right lateral epicondylitis is granted with an
+evaluation of 10 percent effective January 9, 2026.
 
-COMBINED EVALUATION FOR COMPENSATION: 80%
+Service connection for allergic rhinitis is granted with an
+evaluation of 30 percent effective January 9, 2026.
+
+Service connection for left lateral epicondylitis is granted with an
+evaluation of 10 percent effective January 9, 2026.
+
+Your combined evaluation for compensation is 40 percent.

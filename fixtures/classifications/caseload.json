@@ -1,11 +1,12 @@
 {
- "_comment": "A FIXTURE standing in for the semantic classifier on the zero-model path. It is not a model and does not pretend to be one: it is a committed map from terms to extremity groups, replayed through Strands' real structured-output path so a sweep is byte-reproducible offline. A term it does not list is returned at confidence 0.0 and refused by the confidence floor. It has no field for a side; sides are read from the letters by deterministic code. A live classifier replaces it via --model.",
+ "_comment": "A FIXTURE standing in for the semantic classifier on the zero-model path. It is not a model, it says nothing about how accurate a model would be, and no live model has been run against this caseload. It is a committed map from clinical terms to extremity groups, replayed through Strands' real structured-output path and Recheck's real validation, so a sweep is byte-reproducible offline. It lists only clinical names OUTSIDE the rating schedule's vocabulary - schedule names are resolved by the deterministic lexicon and never reach it. A term it does not list is returned at confidence 0.0 and refused by the confidence floor; the caseload deliberately contains one such term ('Lisfranc injury') so that path is exercised. It has no field for a side; sides are read from the letters by deterministic code. A live classifier replaces it via --model.",
  "anatomy": {
-  "median nerve": "upper",
-  "musculospiral": "upper",
-  "radial nerve": "upper",
-  "sciatic nerve": "lower",
-  "popliteal": "lower"
+  "cubital tunnel": "upper",
+  "lateral epicondylitis": "upper",
+  "de quervain": "upper",
+  "achilles": "lower",
+  "patellofemoral": "lower",
+  "iliotibial": "lower"
  },
- "confidence": 0.92
+ "confidence": 0.9
 }
