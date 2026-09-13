@@ -226,7 +226,8 @@ def test_an_agent_that_raises_mid_call_routes_to_unknown():
 
     decision, _ = _classify_one(UNLISTED, lambda: Exploding())
     assert decision.extremity_group == "unknown"
-    assert "HTTP 503" in (decision.note or "")
+    # The class name only: provider text never reaches the report (SECRETS-F5, tests/test_rt_model.py).
+    assert decision.note == "the model call failed (ConnectionError)"
 
 
 # --------------------------------------------------------------------------

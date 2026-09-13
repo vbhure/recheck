@@ -1,6 +1,6 @@
 """Strict schemas for anything crossing the model boundary.
 
-Everything a model produces is untrusted until it validates. Two hardening
+Everything a model produces is untrusted until it validates. Three hardening
 decisions here were driven by measured behaviour, not caution:
 
   extra="forbid"
@@ -12,6 +12,13 @@ decisions here were driven by measured behaviour, not caution:
   confidence bounded 0..1
       An out-of-range confidence must be a hard validation failure, not a
       number that later gets compared against a threshold.
+
+  strict=True on each classification
+      In lax mode a confidence of JSON true became 1.0 and the string "0.9"
+      became 0.9, both above the floor (red team MODEL-RT-P2P6-09). A model
+      that answers a number with a boolean or a string has not given a
+      confidence. Strict mode still accepts a JSON integer (0 or 1) as a
+      float, which is a number.
 
 The model can express exactly one judgment - which extremity group a
 condition name belongs to - and how sure it is. There is no field for a side,
@@ -34,13 +41,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ExtremityGroup = Literal["upper", "lower", "none"]
 
+# The most one answer can hold. recheck.classify reads these too: a name the
+# answer could not echo, or more names than one answer can carry, is never
+# sent, because the call could only come back invalid (a paid call for a
+# certain "unknown").
+MAX_ITEMS = 40
+MAX_CONDITION_CHARS = 200
+
 
 class ConditionClassification(BaseModel):
     """The model's judgment about ONE condition name."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    condition: str = Field(min_length=1, max_length=200)
+    condition: str = Field(min_length=1, max_length=MAX_CONDITION_CHARS)
     extremity_group: ExtremityGroup
     confidence: float = Field(ge=0.0, le=1.0)
 
@@ -55,7 +69,7 @@ class ClassificationBatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    classifications: list[ConditionClassification] = Field(min_length=1, max_length=40)
+    classifications: list[ConditionClassification] = Field(min_length=1, max_length=MAX_ITEMS)
 
 
 # Below this, a classification is not used. Deliberately conservative: an
