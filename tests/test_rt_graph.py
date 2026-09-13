@@ -33,6 +33,7 @@ candidate the red team attacked (af714cb):
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -370,9 +371,45 @@ PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20), ("Lim
         ("Tinnitus", 10)]
 
 
-def test_a_resume_that_failed_part_way_is_not_offered_as_an_open_question(tmp_path, monkeypatch):
-    """Before: every later resume - right answer or garbage - ran no node,
-    printed the same question again and exited 3, forever."""
+def test_a_session_stranded_part_way_is_not_offered_as_an_open_question(tmp_path, monkeypatch):
+    """Before: a run that failed part-way left an activated interrupt with no
+    node waiting on it, and every later resume - right answer or garbage - ran
+    no node, printed the same question again and exited 3, forever.
+
+    The session is stranded here through the graph directly. Through `recheck
+    resume` the same failure no longer strands anything: cmd_resume restores
+    the case and its session, so the question stays answerable (see
+    test_a_resume_that_raises_part_way_keeps_the_question_answerable below).
+    """
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store_root = tmp_path / "runs"
+    assert main("audit", letter, "--case", "pair", store=store_root)[0] == EXIT_AWAITING_HUMAN
+    store = CaseStore(store_root)
+
+    async def locked(self, task, invocation_state=None, **kwargs):
+        raise PermissionError("case.json is locked by another program")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(graph.AssessNode, "invoke_async", locked)
+        restored = build_graph(store, "pair", str(letter), None)
+        pending = outstanding_interrupt(restored)
+        with pytest.raises(PermissionError):
+            asyncio.run(restored.invoke_async(
+                [{"interruptResponse": {"interruptId": pending.id, "response": {"2": "left"}}}]))
+
+    case = store.load("pair")
+    assert case.status == "awaiting_human" and case.recomputed_degree is None
+    assert outstanding_interrupt(build_graph(store, "pair", case.source_path, None)) is None
+
+    code, out, _ = main("resume", "--case", "pair", "--answer", "2=left", store=store_root)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "QUESTION FOR THE REVIEWER" not in out
+    assert store.load("pair").recomputed_degree is None
+
+
+def test_a_resume_that_raises_part_way_keeps_the_question_answerable(tmp_path, monkeypatch):
+    """The same failure through `recheck resume`: the case and its session are
+    put back, so a later resume with the right answer finishes the case."""
     letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
     store_root = tmp_path / "runs"
     assert main("audit", letter, "--case", "pair", store=store_root)[0] == EXIT_AWAITING_HUMAN
@@ -383,17 +420,15 @@ def test_a_resume_that_failed_part_way_is_not_offered_as_an_open_question(tmp_pa
     with monkeypatch.context() as patch:
         patch.setattr(graph.AssessNode, "invoke_async", locked)
         code, _, err = main("resume", "--case", "pair", "--answer", "2=left", store=store_root)
-    assert code == EXIT_CANNOT_PROCEED and "PermissionError" in err
+    assert code == EXIT_CANNOT_PROCEED
 
     store = CaseStore(store_root)
     case = store.load("pair")
-    assert case.status == "awaiting_human" and case.recomputed_degree is None
-    assert outstanding_interrupt(build_graph(store, "pair", case.source_path, None)) is None
-
-    code, out, _ = main("resume", "--case", "pair", "--answer", "2=left", store=store_root)
-    assert code == EXIT_CANNOT_PROCEED
-    assert "QUESTION FOR THE REVIEWER" not in out
-    assert store.load("pair").recomputed_degree is None
+    assert case.status == "awaiting_human"
+    assert outstanding_interrupt(build_graph(store, "pair", case.source_path, None)) is not None
+    code, _, _ = main("resume", "--case", "pair", "--answer", "2=left", store=store_root)
+    assert code == 0
+    assert store.load("pair").recomputed_degree is not None
 
 
 def test_a_normally_interrupted_session_still_offers_its_question(tmp_path):
