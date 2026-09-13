@@ -306,6 +306,10 @@ class AssessNode(MultiAgentBase):
             return self._interrupt(case, decisions, assess_materiality(decisions))
 
         refined = []
+        # Only a condition that was asked can be refined into a follow-up: a
+        # volunteered partial answer for a 0% one (never asked, see asked())
+        # re-asked the unchanged question instead of ending the round.
+        was_asked = set(asked(decisions))
         for index, (group, side) in sorted(answers.items()):
             d = decisions[index]
             parts = []
@@ -316,7 +320,7 @@ class AssessNode(MultiAgentBase):
             if d.side_missing and side != "unknown":
                 d.laterality, d.side_by = side, Actor.HUMAN
                 parts.append(f"side {side}")
-            if parts and d.missing:
+            if parts and d.missing and index in was_asked:
                 refined.append(index)
             trace.add(
                 Actor.HUMAN,
@@ -392,7 +396,7 @@ class AssessNode(MultiAgentBase):
                 "Question for a reviewer",
                 "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)} not established" for i, d in questions)
                 + f". The answers lead to different ratings: {_or(m.possible)}.",
-                value=f"{len(questions)} fact(s) needed",
+                value=f"{sum(len(d.missing) for _, d in questions)} fact(s) needed for {len(questions)} condition(s)",
             )
             case.store_trace(trace)
             self.store.save(case)
@@ -489,6 +493,18 @@ class ComputeNode(MultiAgentBase):
             # and leg ratings raised the engine's ValueError here instead of
             # ending without a figure.
             return _record_unenumerated(self.store, case, trace, m)
+        if not m.settled:
+            # Assess never marks such a case ready. A hand-edited 'ready' case
+            # whose facts leave the result open (an unknown fact that matters,
+            # or a single both-sides evaluation M21-1 leaves open) was computed
+            # and written 'complete' with one of its possible figures - a
+            # result the load then refused. No figure is written.
+            trace.add(Actor.DETERMINISTIC, "Arithmetic REFUSED",
+                      f"the facts on file could change the result ({_or(m.possible)}); "
+                      f"the case is not ready to compute", value="not computed")
+            case.store_trace(trace)
+            self.store.save(case)
+            return _done(Status.FAILED)
         evaluation, assumed = evaluate_for_report(decisions)
         for index, (group, side) in sorted(assumed.items()):
             if group not in ("upper", "lower"):

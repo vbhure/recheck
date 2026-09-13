@@ -273,7 +273,12 @@ def _finish(args, store: CaseStore, outcome: Outcome) -> int:
         if outcome.state == Outcome.FAILED:
             print(f"[recheck] {outcome.detail}", file=sys.stderr)
             if store.exists(outcome.case_id):
-                _show(store, outcome.case_id, brief=getattr(args, "brief", False))
+                try:
+                    _show(store, outcome.case_id, brief=getattr(args, "brief", False))
+                except CaseCorrupt as exc:
+                    # The detail printed above is usually this same refusal.
+                    if str(exc) != outcome.detail:
+                        raise
             return EXIT_CANNOT_PROCEED
         if outcome.state == Outcome.AWAITING_HUMAN:
             print(question_text(store, outcome.case_id, _store_flag(args), exiting=True,
@@ -515,8 +520,8 @@ def _finish_ready(args, store: CaseStore, case) -> int:
               f"audit it again, run {_audit_again(args, case.source_path, args.case)}.", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
     m = assess(case.load_decisions())
-    if m.unknown and not m.settled:
-        print(f"[recheck] case {args.case} is marked ready, but unknown facts on file could change its result. "
+    if not m.settled:
+        print(f"[recheck] case {args.case} is marked ready, but the facts on file could change its result. "
               f"Nothing was computed. Re-audit it with {_audit_again(args, case.source_path, args.case)}.",
               file=sys.stderr)
         return EXIT_CANNOT_PROCEED

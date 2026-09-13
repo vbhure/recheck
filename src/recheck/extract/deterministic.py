@@ -307,11 +307,14 @@ _PARENTHETICAL_LINE = re.compile(
 )
 _SENTENCE_END = re.compile(r"[.;!?][)\"'\]]*$")
 # Words a wrapped sentence can end a line on and carry on after: "Service
-# connection for" / "Left knee strain is granted".
+# connection for" / "Left knee strain is granted". Matched in lower case only,
+# on purpose: wrapped prose ends a line on a lower-case "for" or "is", while an
+# address ends on a state code or a unit letter ("Gary, IN", "Portland, OR",
+# "Apt A"), which read as "in", "or" and "a" and joined a name and address
+# block to the rating below it.
 _JOINING_TAIL = re.compile(
     r"\b(?:a|an|the|of|for|to|and|or|with|in|on|at|by|from|as|is|was|are|were|be|been|has|have|under|"
-    r"including|include|includes)\s*$",
-    re.I,
+    r"including|include|includes)\s*$"
 )
 
 # A condition name longer than this is text the sentence split failed to
@@ -445,6 +448,14 @@ def _split_scope(text: str) -> tuple[str, str, str | None]:
     return text[: match.start()], text[match.start():], match.group(0).strip().rstrip(":").strip()
 
 
+def _open_lead_in(run: str) -> bool:
+    """Whether the unfinished sentence ending `run` has a lead-in whose condition name has not ended."""
+    partial = re.split(r"[.;!?]\s", run)[-1]
+    matches = list(_LEAD_IN.finditer(partial))
+    return bool(matches) and not re.search(r"\b(?:is|are|was|were|has been|have been)\b|\d",
+                                           partial[matches[0].end():])
+
+
 def _blocks(text: str) -> list[tuple[str, bool]]:
     """Group lines into runs a wrapped sentence can span: (text, may start mid-sentence).
 
@@ -461,6 +472,7 @@ def _blocks(text: str) -> list[tuple[str, bool]]:
     current: list[str] = []
     soft = False  # the run being built may begin mid-sentence
     unfinished = False  # the previous line did not end its sentence
+    bridged = None  # (blocks so far, sentence offset) of the one break joined for an open lead-in
     lines = text.split("\n")
     for number, line in enumerate(lines):
         stripped = line.strip()
@@ -482,9 +494,21 @@ def _blocks(text: str) -> list[tuple[str, bool]]:
             # was sent to the model as part of the condition name. The next
             # run is marked as possibly starting mid-sentence, and parse()
             # refuses a rating there that has no lead-in.
+            #
+            # A name the lead-in has opened ("Service connection for right" /
+            # "Achilles tendonitis is granted", "chronic" / "PTSD") may bridge
+            # ONE such break. A salutation or address sits on a line of its
+            # own, so reaching a rating from a subject line ("Your Claim for
+            # Compensation" / "Dear Ms Right," / "Knee strain is continued")
+            # takes a second break, and that one splits.
             if current and unfinished and re.match(r"[A-Z]", stripped) and not _JOINING_TAIL.search(current[-1]):
-                blocks.append((" ".join(current), soft))
-                current = []
+                run = " ".join(current)
+                sentence_start = len(run) - len(re.split(r"[.;!?]\s", run)[-1])
+                if _open_lead_in(run) and bridged != (len(blocks), sentence_start):
+                    bridged = (len(blocks), sentence_start)
+                else:
+                    blocks.append((run, soft))
+                    current = []
         else:
             heading = bool(_HEADING_WORD.search(line))
             parenthetical = bool(_PARENTHETICAL_LINE.match(line))
@@ -774,10 +798,13 @@ def _only_restatements(tail: str, read: dict[str, list[tuple[int, int | None, fr
         # a row whatever its number. _key ignores diagnostic codes, so a
         # statement under a DIFFERENT code ("scar of the left knee (DC 7805)"
         # after the row "Scar, left knee (DC 7804)") is a second evaluation
-        # the heading cut, not a restatement: where both name codes, they must
-        # be the same codes.
+        # the heading cut, not a restatement: where both name codes, one must
+        # cite all the codes of the other. A hyphenated code (DC 5003-5260)
+        # names one evaluation, and a restatement may cite either part;
+        # disjoint or partly overlapping codes are a second evaluation.
         codes = _codes(condition)
-        return any(p == percent and (not is_row or r is None or r == row) and (not c or not codes or c == codes)
+        return any(p == percent and (not is_row or r is None or r == row)
+                   and (not c or not codes or c <= codes or codes <= c)
                    for p, r, c in read.get(_key(condition), []))
 
     for line in tail.split("\n"):
@@ -890,15 +917,19 @@ def parse(text: str) -> Extraction:
             if found is None:
                 continue
             condition = _clean(span)
-            problem = _name_problem(condition)
-            if problem:
-                return _refuse(result, f"{problem}; {_PARTIAL}")
+            # Before the name check: in a run that may start mid-sentence the
+            # captured "name" is often the wrapped tail ("Diagnostic Code
+            # 5260", "January 9, 2026"), and the name check blamed a name the
+            # letter does state. Both refuse; only the reason differs.
             if may_start_mid_sentence and start == 0 and not _LEAD_IN.search(span):
                 return _refuse(result, (
                     f"the rating statement in {_where(index, sentence)} follows a line with no lower-case "
                     f"letters, or an unfinished line, that may be the start of its condition name, a "
                     f"salutation or letterhead; {_PARTIAL}"
                 ))
+            problem = _name_problem(condition)
+            if problem:
+                return _refuse(result, f"{problem}; {_PARTIAL}")
             if _key(condition) in read:
                 # Two statements for one condition are either a staged rating
                 # (20 percent, then 30 percent from a later date: one

@@ -1,6 +1,7 @@
 """Final regression pass: where the two fix rounds met each other.
 
-Each test fails on the code before its fix (commit 65b8d0c).
+Each test fails on the code before its fix (commit 65b8d0c), except the
+controls, which say so.
 
   RG-01  An unfinished line above a rating sentence with no lead-in was
          joined to it: "Dear Mr. Right," gave a knee its side, and a
@@ -91,18 +92,20 @@ def test_the_salutation_letter_never_reaches_a_figure_through_the_cli(tmp_path):
     "Service connection for left knee strain is\nGranted with an evaluation of 10 percent.",
 ])
 def test_a_sentence_wrapped_after_a_joining_word_is_still_read(wrapped):
+    """Control (passes before and after)."""
     extraction = parse(wrapped + STATED.format("10 percent"))
     assert extraction.ok and [(r.condition.lower(), r.percent) for r in extraction.ratings] == [
         ("left knee strain", 10)]
 
 
 def test_a_letter_ending_its_salutation_with_punctuation_is_unaffected():
+    """Control (passes before and after)."""
     extraction = parse("Dear Veteran:\n\nTinnitus is continued as 10 percent disabling." + STATED.format("10 percent"))
     assert extraction.ok and [(r.condition, r.percent) for r in extraction.ratings] == [("Tinnitus", 10)]
 
 
 def test_the_committed_letters_read_the_same():
-    """The change touches only letters with an unfinished line above an
+    """Control (passes before and after): the change touches only letters with an unfinished line above an
     upper-case rating sentence; none of the committed ones has one."""
     for path in sorted((ROOT / "fixtures" / "letters").glob("*.txt")) + sorted(
             (ROOT / "fixtures" / "caseload").glob("*.txt")):
@@ -156,6 +159,7 @@ def test_a_statement_under_another_code_after_a_stop_heading_is_not_a_restatemen
 
 
 def test_a_statement_under_the_same_code_is_still_a_restatement():
+    """Control (passes before and after)."""
     extraction = parse(DC_RESTATE.format(code="7804"))
     assert extraction.ok and [r.percent for r in extraction.ratings] == [20, 10]
 
@@ -263,11 +267,24 @@ def test_the_allowed_actions_are_exactly_the_actions_the_nodes_write():
 # ==========================================================================
 
 def test_the_pdf_child_is_stopped_at_its_budget_in_short_waits(monkeypatch):
+    """The parent waits in steps of at most a second, so Ctrl+C lands at once.
+    subprocess.run waited once for the whole budget."""
+    import subprocess
+
     monkeypatch.setattr(pdf_text, "_BOOTSTRAP", "import sys, time; sys.stdin.buffer.read(); time.sleep(60)")
+    waits = []
+    real = subprocess.Popen.communicate
+
+    def communicate(self, input=None, timeout=None):
+        waits.append(timeout)
+        return real(self, input=input, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
     limits = pdf_text.Limits(max_pages=1, max_chars=1, max_stream_bytes=1, max_content_bytes=1)
     started = time.monotonic()
-    assert pdf_text.extract(b"%PDF-1.4", "x.pdf", limits, 1.0).kind == "timeout"
-    assert time.monotonic() - started < 10
+    assert pdf_text.extract(b"%PDF-1.4", "x.pdf", limits, 3.0).kind == "timeout"
+    assert time.monotonic() - started < 15
+    assert waits and all(w is not None and w <= 1.0 for w in waits), waits
 
 
 def test_the_pdf_child_ends_itself_at_its_budget(tmp_path):
@@ -337,6 +354,7 @@ def test_a_non_compensable_unknown_is_not_asked_and_not_required(tmp_path):
 
 
 def test_a_non_compensable_unknown_may_still_be_answered(tmp_path):
+    """Control (passes before and after)."""
     store = tmp_path / "runs"
     letter = tabular_letter(tmp_path / "zero.txt", ZERO_UNKNOWN, stated=70)
     assert main("audit", letter, "--case", "zero", store=store)[0] == EXIT_AWAITING_HUMAN
