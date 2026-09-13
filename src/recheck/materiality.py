@@ -16,12 +16,22 @@ stakes: the ratings the answers lead to.
 This is deterministic code deciding when the human is needed. The model has
 no part in it.
 
-One further kind of uncertainty is not a question for a reviewer. A letter
-may rate both extremities of a pair in ONE evaluation ("bilateral pes
-planus"). Whether 4.26 includes such an evaluation in the bilateral factor is
-a question of rating practice that Recheck does not decide. It is enumerated
-the same way; if it changes the result, the case is reported as
-UNDETERMINED rather than guessed.
+A letter may rate both extremities of a pair in ONE evaluation ("bilateral
+pes planus", DC 5276). VA's adjudication manual says when such an evaluation
+enters the bilateral factor:
+
+    "When a specific DC provides one evaluation for a bilateral condition,
+    only apply the bilateral factor if there is/are an independently ratable
+    condition in one of the involved extremities ... or independently
+    ratable conditions of both uninvolved extremities"
+    - M21-1, Part V, Subpart iv, 1.C.4.b
+
+The first case is applied here: the single evaluation joins the group when
+another compensable disability of the same pair of extremities is rated (the
+Board did exactly this in Citation Nr 1519449: bilateral feet 10, right knee
+10, left knee 10 -> 27, plus 2.7). The second case - the rest of the
+calculation is not spelled out - is enumerated both ways, and if the reading
+changes the result the case is UNDETERMINED rather than guessed.
 """
 
 from __future__ import annotations
@@ -45,26 +55,59 @@ SIDES = ("left", "right")
 def options_for(decision: Decision) -> list[tuple[str, str]]:
     """Every (extremity group, side) a condition could turn out to have."""
     group, side = decision.extremity_group, decision.laterality
+    # "both" is a possible side: a letter that omits the side may be rating a
+    # single evaluation of both extremities (plantar fasciitis, DC 5269, is
+    # rated "unilateral or bilateral").
+    sides = SIDES + ("both",)
     if group == "unknown":
         if side == "unknown":
-            return [("none", "unknown")] + [(g, s) for g in GROUPS for s in SIDES]
+            return [("none", "unknown")] + [(g, s) for g in GROUPS for s in sides]
         return [("none", side)] + [(g, side) for g in GROUPS]
     if group in GROUPS and side == "unknown":
-        return [(group, s) for s in SIDES]
+        return [(group, s) for s in sides]
     return [(group, side)]
 
 
 def paired_disabilities(
     facts: Sequence[tuple[int, str, str]], *, both_in_factor: bool
 ) -> list[Paired]:
-    """Arm and leg disabilities whose side is established, as the engine takes them."""
+    """Arm and leg disabilities whose side is established, as the engine takes them.
+
+    A single evaluation covering both extremities ("both") is included when
+    M21-1 V.iv.1.C.4.b settles it - another compensable disability of the same
+    pair is rated - and otherwise only under the `both_in_factor` reading.
+    """
+    compensable = [(p, g, s) for p, g, s in facts if g in GROUPS and p >= 10]
     out: list[Paired] = []
     for percent, group, side in facts:
         if group not in GROUPS:
             continue
-        if side in SIDES or (side == "both" and both_in_factor):
+        if side in SIDES:
             out.append(Paired(percent, group, side))
+        elif side == "both":
+            others_in_pair = [f for f in compensable if f[1] == group and f != (percent, group, side)]
+            if others_in_pair or both_in_factor:
+                out.append(Paired(percent, group, side))
     return out
+
+
+def both_reading_is_open(facts: Sequence[tuple[int, str, str]]) -> bool:
+    """True when a single both-sides evaluation is in M21-1's unsettled case.
+
+    That is: nothing else compensable is rated in its own pair of
+    extremities, but both of the OTHER pair's extremities are. M21-1 says the
+    factor applies then, without saying how the calculation runs.
+    """
+    compensable = [(p, g, s) for p, g, s in facts if g in GROUPS and p >= 10]
+    for percent, group, side in facts:
+        if side != "both" or group not in GROUPS or percent < 10:
+            continue
+        own = [f for f in compensable if f[1] == group and f != (percent, group, side)]
+        other = "lower" if group == "upper" else "upper"
+        other_sides = {s for _, g, s in compensable if g == other}
+        if not own and ({"left", "right"} <= other_sides or "both" in other_sides):
+            return True
+    return False
 
 
 def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool = False) -> Evaluation:
@@ -150,8 +193,10 @@ def assess(decisions: Sequence[Decision]) -> Materiality:
     """Enumerate every completion of the unknown facts and collect final degrees."""
     unknown = tuple(i for i, d in enumerate(decisions) if d.missing)
     choices = [options_for(decisions[i]) for i in unknown]
-    readings = (False, True) if any(d.laterality == "both" and d.extremity_group != "none"
-                                    for d in decisions) else (False,)
+    # Enumerate both readings only where M21-1 leaves the answer open; a
+    # completion that is not in that case gives the same degree either way.
+    readings = (False, True) if any(d.laterality == "both" or d.laterality == "unknown"
+                                    for d in decisions if d.extremity_group != "none") else (False,)
 
     count = len(readings)
     for c in choices:

@@ -70,10 +70,15 @@ LOWER_TERMS = {
     # DC 5269 plantar fasciitis; DC 5262 "medial tibial stress syndrome
     # (MTSS), or shin splints"
     "plantar", "shin",
-    # DC 8520-8525, 8527 and their neuritis (86xx) and neuralgia (87xx) forms:
+    # DC 8520-8525 and their neuritis (86xx) and neuralgia (87xx) forms:
     # sciatic, external / internal popliteal, superficial / deep peroneal,
-    # anterior / posterior tibial, internal saphenous
-    "sciatic", "popliteal", "peroneal", "saphenous",
+    # anterior / posterior tibial. (DC 8527 internal saphenous is a phrase
+    # below: a "saphenous vein graft" belongs to a heart bypass.)
+    "sciatic", "popliteal", "peroneal",
+    # DC 5257 "patellofemoral complex"; 38 CFR 4.73 "iliotibial (Maissiat's)
+    # band"; the foot tables' "tendo achillis"; DC 5279 "Metatarsalgia,
+    # anterior (Morton's disease)"
+    "patellofemoral", "iliotibial", "achilles", "achillis", "morton",
 }
 UPPER_PHRASES = (
     "upper extremity", "upper extremities",
@@ -90,8 +95,9 @@ LOWER_PHRASES = (
     # DC 5263; DC 5278 "Claw foot (pes cavus)"; "pes planus" is 4.26(a)'s
     # own example of a disability of the foot
     "genu recurvatum", "pes cavus", "pes planus",
-    # DC 8526 anterior crural (femoral) nerve; DC 8528 obturator nerve
-    "anterior crural", "obturator nerve",
+    # DC 8526 anterior crural (femoral) nerve; DC 8527 internal saphenous
+    # nerve; DC 8528 obturator nerve
+    "anterior crural", "internal saphenous", "saphenous nerve", "obturator nerve",
 )
 
 # Conditions that are never extremity disabilities - but only when nothing in
@@ -116,6 +122,21 @@ NON_EXTREMITY_HINTS = (
     "kyphoscoliosis", "pectus", "chest wall",
     # mental disorders, 38 CFR 4.130 (DC 9201-9440)
     "schizophreni", "obsessive compulsive", "depressive", "anxiety", "bipolar",
+)
+
+# Vocabulary that makes "not an arm or leg" implausible. The lexicon never
+# says "none" for a name containing it, and a model's "none" is vetoed on it
+# (recheck.classify). "Cervical strain with radiculopathy" and "diabetes
+# mellitus with peripheral neuropathy" carry a non-extremity hint AND nerve
+# vocabulary; calling them "none" would silently drop a 4.26 pair.
+# Whole words for short body parts (so "pharmacological" is not an "arm"),
+# stems for the anatomical and neurological vocabulary.
+EXTREMITY_MARKERS = re.compile(
+    r"\b(?:arms?|elbows?|forearms?|wrists?|hands?|fingers?|thumbs?|shoulders?|"
+    r"legs?|thighs?|knees?|ankles?|foot|feet|toes?|hips?|heels?)\b"
+    r"|nerve|neuritis|neuralgia|paralysis|radicul|neuropath|extremit|carpal|tarsal|"
+    r"metacarp|metatars|phalan|hallux|patell|tibia|fibula|femor|humer|radius|ulna|"
+    r"calcane|achilles|plantar|amputat|muscle group"
 )
 
 # Clauses that name a DIFFERENT condition the rated one is linked to. The
@@ -162,7 +183,7 @@ _STOP_HEADING = re.compile(
 )
 
 _TABULAR = re.compile(
-    r"^\s*\d+\.\s*(?P<condition>.+?)\s*\.{3,}\s*(?P<pct>\d{1,3})\s*%",
+    r"^\s*(?P<row>\d+)\.\s*(?P<condition>.+?)\s*\.{3,}\s*(?P<pct>\d{1,3})\s*%",
     re.MULTILINE,
 )
 
@@ -240,7 +261,7 @@ def _lexical_group(text: str) -> ExtremityGroup:
     if lower:
         return "lower"
     if any(hint in low for hint in NON_EXTREMITY_HINTS):
-        return "none"
+        return "unrecognised" if EXTREMITY_MARKERS.search(low) else "none"
     return "unrecognised"
 
 
@@ -346,7 +367,9 @@ def parse(text: str) -> Extraction:
 
     # Every numbered row is its own evaluation, even when two rows read
     # identically (two separately rated scars): tabular rows are never deduped.
+    rows: list[int] = []
     for match in _TABULAR.finditer(scope):
+        rows.append(int(match.group("row")))
         condition = _clean(match.group("condition"))
         percent = int(match.group("pct"))
         number = scope.count("\n", 0, match.start("condition")) + 1
@@ -382,6 +405,18 @@ def parse(text: str) -> Extraction:
         if match:
             result.stated_combined = int(match.group(1))
             break
+
+    # A numbered list with a gap means a row did not match the pattern (a
+    # wrapped line, a missing leader). Computing on the rows that did match
+    # would silently drop an evaluation, so the letter is refused instead.
+    if rows and rows != list(range(1, len(rows) + 1)):
+        missing = sorted(set(range(1, max(rows) + 1)) - set(rows))
+        result.ratings = []
+        result.unparsed_reason = (
+            f"numbered evaluations are not contiguous (rows read: {rows}; missing: {missing or 'order'}); "
+            f"refusing rather than computing on a partial list"
+        )
+        return result
 
     if not result.ratings:
         result.unparsed_reason = "no rating lines matched any known tabular or prose pattern"

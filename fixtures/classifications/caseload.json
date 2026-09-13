@@ -3,10 +3,7 @@
  "anatomy": {
   "cubital tunnel": "upper",
   "lateral epicondylitis": "upper",
-  "de quervain": "upper",
-  "achilles": "lower",
-  "patellofemoral": "lower",
-  "iliotibial": "lower"
+  "de quervain": "upper"
  },
  "confidence": 0.9
 }

@@ -244,23 +244,37 @@ def build_model(config: ProviderConfig) -> Any:
         ) from exc
     cls = getattr(module, class_name)
 
+    # The wall-clock budget in recheck.classify cancels the call, but a client
+    # blocked in a socket read can hold the process open after that. So the
+    # same budget is given to each provider's own client, with retries off:
+    # one call per letter means one attempt.
     if config.provider == "bedrock":
+        from botocore.config import Config
+
         kwargs: dict[str, Any] = {
             "model_id": config.model_id,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "boto_client_config": Config(
+                read_timeout=config.timeout_s,
+                connect_timeout=min(10.0, config.timeout_s),
+                # total_max_attempts counts the first try; max_attempts would allow a retry
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
         }
         if config.region:
             kwargs["region_name"] = config.region
         return cls(**kwargs)
     if config.provider == "anthropic":
         return cls(
+            client_args={"timeout": config.timeout_s, "max_retries": 0},
             model_id=config.model_id,
             max_tokens=config.max_tokens,
             params={"temperature": config.temperature},
         )
     if config.provider == "ollama":
-        return cls(host=config.host, model_id=config.model_id, temperature=config.temperature)
+        return cls(host=config.host, model_id=config.model_id, temperature=config.temperature,
+                   ollama_client_args={"timeout": config.timeout_s})
     raise ProviderNotConfigured(f"no constructor mapping for {config.provider!r}")
 
 

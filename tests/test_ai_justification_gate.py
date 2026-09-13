@@ -29,22 +29,34 @@ sciatic) that belonged in the lexicon all along.
 
 (b) LETTER PHRASINGS - fixtures/va_letter_phrasings.json
     70 names in the style letters use - clinical, eponymous, colloquial
-    ("cubital tunnel syndrome", "Morton's neuroma", "meralgia paresthetica").
-    LABELS ARE INTERNAL: assigned by this project from anatomy, written by the
-    same project that maintains the lexicon, and not an external oracle. Four
-    entries anatomy cannot settle (Raynaud's, tinea pedis, ganglion cyst,
-    peripheral neuropathy) are marked ambiguous and not scored. Measured:
-        arm or leg names   47:  8 resolved, 39 abstained (83%), 0 wrong
-        other names        19:  8 resolved, 11 abstained,       0 wrong
-    CLAIM: most arm and leg names a letter actually uses are outside the
-    schedule's vocabulary, so a deterministic lexicon of the schedule abstains
-    on them. That residue is the model's job.
+    ("cubital tunnel syndrome", "De Quervain's tenosynovitis", "meralgia
+    paresthetica"). LABELS ARE INTERNAL: assigned by this project from
+    anatomy, written by the same project that maintains the lexicon, and not
+    an external oracle. Four entries anatomy cannot settle (Raynaud's, tinea
+    pedis, ganglion cyst, peripheral neuropathy) are marked ambiguous and not
+    scored. Measured:
+        arm or leg names   47: 12 resolved, 35 abstained, 0 wrong
+        other names        19:  8 resolved, 11 abstained, 0 wrong
+    What this shows, and no more: a lexicon limited to the schedule's own
+    vocabulary abstains on most of these names, and never asserts a wrong
+    group. An independent review added 26 common limb words and resolved 29
+    of the 47 with still no wrong assertion - so a bigger lexicon closes much
+    of the gap too. The line Recheck draws is a policy (the schedule's
+    vocabulary is deterministic; names outside it go to the classifier, and
+    everything the classifier says is gated), not a proof that a model is
+    needed.
 
 WHAT IS NOT CLAIMED. That a model classifies set (b) correctly: no live model
 has been run, and every "AI" decision in the fixtures is a replayed fixture.
-That no deterministic approach could cover set (b): a large clinical
-terminology might. That set (b) is representative of real letters: it was
-written for this project.
+That no deterministic approach could cover set (b): a larger lexicon or a
+clinical terminology would cover much of it. That set (b) is representative
+of real letters: it was written for this project.
+
+History: the review that measured the 26-word expansion also found schedule
+words ("patellofemoral", "iliotibial", "Achilles", "Morton's") listed here as
+names the lexicon should abstain on. They are the schedule's vocabulary, so
+they were moved into the lexicon - and a test pinning their abstention was
+removed, because it failed exactly when the lexicon followed its own policy.
 
 THE SAFETY PROPERTIES, on both sets:
     - the lexicon never asserts a wrong group; it abstains instead, because a
@@ -69,8 +81,7 @@ import sys
 
 import pytest
 
-from recheck.classify import EXTREMITY_MARKERS
-from recheck.extract.deterministic import _classify_extremity
+from recheck.extract.deterministic import EXTREMITY_MARKERS, _classify_extremity
 from recheck.schema import ClassificationBatch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -194,16 +205,12 @@ def test_a_words_that_name_more_than_one_thing_are_left_to_abstain(name):
 # (b) Letter phrasings: the lexicon abstains - the model's job
 # --------------------------------------------------------------------------
 
-def test_b_lexicon_abstains_on_most_arm_and_leg_names_letters_use():
-    """Measured 39 of 47 abstained. This residue is what the classifier is for."""
+def test_b_lexicon_never_misassigns_letter_style_arm_and_leg_names():
+    """Measured 12 resolved, 35 abstained of 47. Only the zero-wrong property is
+    pinned: coverage may rise as schedule vocabulary is added, and must."""
     resolved, abstained, wrong = _outcomes(PHRASINGS, LIMB)
     assert wrong == []
     assert abstained + resolved == 47
-    assert abstained / (abstained + resolved) >= 0.7, (
-        f"the lexicon now resolves {resolved} of 47 letter-style arm/leg names. If it has become "
-        f"sufficient for the names letters use, the case for the model has to be re-made, not assumed."
-    )
-    assert 33 <= abstained <= 45
 
 
 def test_b_non_extremity_names_are_never_misassigned():
@@ -221,15 +228,34 @@ def test_b_ambiguous_names_get_no_group_from_the_lexicon():
 
 
 @pytest.mark.parametrize(
-    "name",
-    ["cubital tunnel syndrome", "De Quervain's tenosynovitis", "Morton's neuroma",
-     "meralgia paresthetica", "patellofemoral pain syndrome", "Achilles tendinopathy",
-     "lateral epicondylitis", "iliotibial band syndrome", "tarsal tunnel syndrome",
-     "rotator cuff tendinopathy", "adhesive capsulitis", "Dupuytren's contracture"],
+    "name,group",
+    [("Morton's neuroma", "lower"),            # DC 5279 "(Morton's disease)"
+     ("patellofemoral pain syndrome", "lower"),  # DC 5257 "patellofemoral complex"
+     ("Achilles tendinopathy", "lower"),         # "tendo achillis"
+     ("iliotibial band syndrome", "lower")],     # 38 CFR 4.73 "iliotibial (Maissiat's) band"
 )
-def test_b_representative_letter_names_the_lexicon_abstains_on(name):
-    """Clinical and eponymous names with no schedule anatomy in them."""
+def test_b_schedule_words_found_in_the_letter_set_are_deterministic(name, group):
+    """Names a review showed are the schedule's own vocabulary: lexicon, not model."""
+    assert _classify_extremity(name) == group
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["cervical strain with radiculopathy",
+     "diabetes mellitus with peripheral neuropathy",
+     "degenerative disc disease of the lumbar spine with radiculopathy"],
+)
+def test_a_non_extremity_hint_never_outweighs_nerve_vocabulary(name):
+    """A hint ("cervical strain", "diabetes", "spine") next to nerve vocabulary
+    means no opinion, never "none": "none" would silently drop a 4.26 pair.
+    "cervical strain" was added as a hint and briefly did exactly that."""
     assert _classify_extremity(name) == ABSTAIN
+
+
+def test_a_saphenous_vein_graft_is_not_a_leg_disability():
+    """"saphenous" as a bare word called a heart bypass graft a leg disability."""
+    assert _classify_extremity("coronary artery disease, status post bypass with saphenous vein graft") != "lower"
+    assert _classify_extremity("Neuralgia, internal saphenous nerve") == "lower"
 
 
 def test_b_lumbosacral_radiculopathy_is_not_called_none():

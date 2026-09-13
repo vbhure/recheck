@@ -199,8 +199,10 @@ def test_a_session_edited_to_continue_at_compute_does_not_compute(tmp_path):
     assert case.recomputed_degree is None
     assert case.status == "awaiting_human"
     assert "NO DISCREPANCY FOUND" not in out and "POTENTIAL DISCREPANCY" not in out
-    if "compute" in nodes_run(store, "pair"):
-        assert "Arithmetic REFUSED" in actions(store, "pair")
+    # Unconditional: if Strands ever stopped honouring the edited frontier this
+    # test must fail loudly rather than pass without exercising the self-check.
+    assert nodes_run(store, "pair")[-1] == "compute"
+    assert "Arithmetic REFUSED" in actions(store, "pair")
 
 
 @pytest.mark.parametrize("status", ["open", "extracted", "classified", "awaiting_human", "undetermined", "unparsed"])

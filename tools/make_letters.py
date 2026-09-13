@@ -41,7 +41,7 @@ Date of Notification: March 14, 2026
 
                          RATING DECISION
 
-  1. Post-traumatic stress disorder (DC 9411) ................ 60%
+  1. Asthma, bronchial (DC 6602) ............................ 60%
   2. Limitation of flexion, right knee (DC 5260) ............. 20%
   3. Limitation of flexion, left knee (DC 5260) .............. 10%
   4. Tinnitus (DC 6260) ...................................... 10%
@@ -59,7 +59,7 @@ Date of Notification: April 2, 2026
 
 DECISION
 
-Service connection for post-traumatic stress disorder is granted with an
+Service connection for bronchial asthma is granted with an
 evaluation of 60 percent effective January 9, 2026.
 
 Service connection for limitation of flexion of the right knee is granted
@@ -84,7 +84,7 @@ Date of Notification: May 20, 2026
 
 DECISION
 
-Evaluation of post-traumatic stress disorder, currently evaluated as
+Evaluation of bronchial asthma, currently evaluated as
 30 percent disabling, is increased to 60 percent effective February 1, 2026.
 
 Evaluation of limitation of flexion of the right knee, currently evaluated
@@ -97,10 +97,10 @@ Evaluation of tinnitus is continued as 10 percent disabling.
 
 REASONS FOR DECISION
 
-An evaluation of 70 percent is assigned for post-traumatic stress disorder
-only where there is occupational and social impairment with deficiencies in
-most areas. A 100 percent evaluation requires total occupational and social
-impairment. The evidence does not show this level of impairment.
+An evaluation of 100 percent is assigned for bronchial asthma only where
+FEV-1 is less than 40 percent of predicted. A 60 percent evaluation requires
+FEV-1 of 40 to 55 percent of predicted. The evidence shows FEV-1 of 48
+percent of predicted.
 
 Your combined evaluation for compensation is 70 percent.
 """
@@ -115,7 +115,7 @@ Date of Notification: June 11, 2026
 
 DECISION
 
-Service connection for post-traumatic stress disorder is granted with an
+Service connection for bronchial asthma is granted with an
 evaluation of 60 percent effective March 3, 2026.
 
 Service connection for carpal tunnel syndrome of the left wrist is granted
@@ -141,7 +141,7 @@ Date of Notification: July 8, 2026
 
 DECISION
 
-Service connection for post-traumatic stress disorder is granted with an
+Service connection for bronchial asthma is granted with an
 evaluation of 60 percent effective April 15, 2026.
 
 Service connection for degenerative arthritis of the knee is granted with an
@@ -167,7 +167,7 @@ Date of Notification: August 1, 2026
                          RATING DECISION
 
   1. Post-traumatic stress disorder (DC 9411) ................ 50%
-  2. Lumbosacral strain (DC 5237) ............................ 30%
+  2. Cervical strain (DC 5237) ............................... 30%
 
 COMBINED EVALUATION FOR COMPENSATION: 70%
 """
@@ -213,7 +213,7 @@ Date of Notification: August 19, 2026
 
 DECISION
 
-Service connection for post-traumatic stress disorder is granted with an
+Service connection for bronchial asthma is granted with an
 evaluation of 60 percent effective May 4, 2026.
 
 Service connection for left cubital tunnel syndrome is granted with an
@@ -238,7 +238,7 @@ Date of Notification: September 2, 2026
 
 DECISION
 
-Service connection for post-traumatic stress disorder is granted with an
+Service connection for bronchial asthma is granted with an
 evaluation of 60 percent effective June 1, 2026.
 
 Service connection for cubital tunnel syndrome is granted with an

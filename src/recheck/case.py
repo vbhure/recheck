@@ -196,10 +196,28 @@ class CaseStore:
             raise CaseCorrupt(f"case {case_id} has an unknown status {raw.get('status')!r}")
         try:
             case = Case(**raw)
-            case.load_decisions()
+            decisions = case.load_decisions()
             case.load_trace()
         except (TypeError, KeyError, ValueError) as exc:
             raise CaseCorrupt(f"case {case_id} has malformed content: {exc}") from exc
+        # Values, not just shape. A hand-edited "percent": "ten" made a later
+        # node raise mid-run, and a side of "north" was silently treated as
+        # unpaired - a changed result from a tampered file.
+        for index, d in enumerate(decisions):
+            problem = None
+            if type(d.percent) is not int or not 0 <= d.percent <= 100:
+                problem = f"percent {d.percent!r}"
+            elif d.extremity_group not in ("upper", "lower", "none", "unknown"):
+                problem = f"extremity group {d.extremity_group!r}"
+            elif d.laterality not in ("left", "right", "both", "unknown"):
+                problem = f"side {d.laterality!r}"
+            elif d.confidence is not None and not (isinstance(d.confidence, (int, float)) and 0 <= d.confidence <= 1):
+                problem = f"confidence {d.confidence!r}"
+            if problem:
+                raise CaseCorrupt(f"case {case_id} decision [{index}] has an impossible {problem}")
+        for value in (case.stated_combined, case.recomputed_degree):
+            if value is not None and (type(value) is not int or not 0 <= value <= 100):
+                raise CaseCorrupt(f"case {case_id} has an impossible percentage {value!r}")
         return case
 
 

@@ -88,10 +88,10 @@ def test_process_a_asks_only_what_matters_persists_and_exits(store, letter):
     assert "[2] Limitation of motion of the knee" in out
     assert "not established: side" in out
     assert "if lower/left: 80%" in out and "if lower/right: 70%" in out
-    assert "answer with one of: left, right, unknown" in out
+    assert "answer with one of: left, right, both, unknown" in out
     assert "[1] Right knee strain" not in out, "a condition whose side the letter states is not asked"
     assert "never asks for a percentage" in out
-    assert _resume_command(out) == ["resume", "--case", "c1", "--answer", "2=<left|right|unknown>"]
+    assert _resume_command(out) == ["resume", "--case", "c1", "--answer", "2=<left|right|both|unknown>"]
     for noise in ("Tool #", "Traceback", "node_id="):
         assert noise not in out + result.stderr
 

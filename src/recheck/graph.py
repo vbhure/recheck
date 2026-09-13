@@ -138,13 +138,20 @@ class ExtractNode(MultiAgentBase):
         # "open", and a second sweep over the same store reported it as "the
         # run stopped with the case in state 'open'" - a different triage,
         # and one that reads like a crash.
+        # Only READING the document is a refusal. A defect in parse() is a
+        # defect in Recheck and must not be reported as "could not read the
+        # letter", so it is left to surface.
+        from pypdf.errors import PyPdfError
+
         try:
-            extraction = parse(read_document(self.source))
-            reason = extraction.unparsed_reason or "no ratings found"
+            text = read_document(self.source)
         except (ScannedDocument, DocumentTooLarge) as exc:
-            extraction, reason = None, str(exc)
-        except Exception as exc:  # noqa: BLE001 - an unreadable document is a refusal, not a crash
-            extraction, reason = None, f"{pathlib.Path(self.source).name} could not be read ({type(exc).__name__}: {exc})"
+            text, reason = None, str(exc)
+        except (OSError, UnicodeDecodeError, PyPdfError) as exc:
+            text, reason = None, f"{pathlib.Path(self.source).name} could not be read ({type(exc).__name__}: {exc})"
+        extraction = parse(text) if text is not None else None
+        if extraction is not None:
+            reason = extraction.unparsed_reason or "no ratings found"
         # The caller opens the case (recording the classifier); extraction
         # starts its facts and trace afresh.
         case = self.store.load(self.case_id)
@@ -399,6 +406,16 @@ class ComputeNode(MultiAgentBase):
                 rule="38 CFR 4.25, 4.26",
             )
 
+        if evaluation.excluded_under_426d:
+            trace.add(
+                Actor.DETERMINISTIC,
+                "38 CFR 4.26(d) decides this result",
+                "4.26(d) took effect April 16, 2023 (88 FR 22914). For a period before that date the "
+                "prior rule applied the bilateral factor without exception, and VA has stated that "
+                "evaluations under the prior rule were not in error (88 FR 89307).",
+                value="check the period the decision covers",
+                rule="38 CFR 4.26(d)",
+            )
         if evaluation.bilateral_members:
             trace.add(
                 Actor.DETERMINISTIC,
@@ -440,11 +457,14 @@ class ComputeNode(MultiAgentBase):
 def accepted_answers(decision: Decision) -> list[str]:
     """The answers a reviewer may give for one condition - facts, never numbers."""
     if decision.group_missing and decision.side_missing:
-        return ["upper-left", "upper-right", "lower-left", "lower-right", "upper", "lower", "none", "unknown"]
+        return ["upper-left", "upper-right", "upper-both", "lower-left", "lower-right", "lower-both",
+                "upper", "lower", "none", "unknown"]
     if decision.group_missing:
         return ["upper", "lower", "none", "unknown"]
     if decision.side_missing:
-        return ["left", "right", "unknown"]
+        # "both": one evaluation covering both extremities, e.g. plantar
+        # fasciitis rated "unilateral or bilateral" under DC 5269.
+        return ["left", "right", "both", "unknown"]
     return []
 
 
@@ -454,7 +474,7 @@ def _interpret(value: str, decision: Decision) -> tuple[str, str]:
     side = decision.laterality if not decision.side_missing else "unknown"
     if value == "unknown":
         return group, side
-    if value in ("left", "right"):
+    if value in ("left", "right", "both"):
         return group, value
     if value == "none":
         return "none", side

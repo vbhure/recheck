@@ -297,7 +297,19 @@ def cmd_resume(args) -> int:
 
     outcome = outcome_from_case(store, args.case)
     if outcome.state == Outcome.AWAITING_HUMAN:
-        # The answer was rejected; the same question is open again.
+        # Normally the answer was rejected and the same question is open again.
+        # If the session no longer holds that question (a tampered session the
+        # compute node refused), printing it would hand out a command that
+        # cannot work, so say what can.
+        try:
+            reopened = outstanding_interrupt(build_graph(store, args.case, case.source_path, None))
+        except Exception:  # noqa: BLE001
+            reopened = None
+        if reopened is None:
+            print(f"[recheck] case {args.case} could not be continued and its question is no longer open "
+                  f"in the Strands session. Re-audit it with `recheck{_store_flag(args)} audit "
+                  f"{_quoted(case.source_path)} --case {args.case} --fresh`.", file=sys.stderr)
+            return EXIT_CANNOT_PROCEED
         print(question_text(store, args.case, _store_flag(args), exiting=True))
         return EXIT_CANNOT_PROCEED
     return _finish(args, store, outcome)

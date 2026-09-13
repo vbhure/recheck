@@ -48,9 +48,8 @@ FULL = "2=left,3=upper-right,4=lower"
 def test_accepted_answers_depend_on_what_is_missing():
     assert accepted_answers(DECISIONS[0]) == []
     assert accepted_answers(DECISIONS[1]) == []
-    assert accepted_answers(DECISIONS[2]) == ["left", "right", "unknown"]
-    assert accepted_answers(DECISIONS[3]) == [
-        "upper-left", "upper-right", "lower-left", "lower-right", "upper", "lower", "none", "unknown"]
+    assert accepted_answers(DECISIONS[2]) == ["left", "right", "both", "unknown"]
+    assert accepted_answers(DECISIONS[3]) == ["upper-left", "upper-right", "upper-both", "lower-left", "lower-right", "lower-both", "upper", "lower", "none", "unknown"]
     assert accepted_answers(DECISIONS[4]) == ["upper", "lower", "none", "unknown"]
 
 
@@ -113,6 +112,7 @@ def test_the_parser_never_raises_on_hostile_text():
     for response in hostile:
         answers, problems = parse_answers(response, DECISIONS)
         assert isinstance(answers, dict) and isinstance(problems, list)
+        assert problems, f"hostile answer accepted: {response[:40]!r}"
 
 
 def test_answers_are_case_and_whitespace_insensitive_but_nothing_else():

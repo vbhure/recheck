@@ -62,10 +62,13 @@ def D(percent: int, group: str, side: str, condition: str = "c") -> Decision:
 # --------------------------------------------------------------------------
 
 def test_options_cover_every_fact_a_condition_could_turn_out_to_have():
+    # "both": a letter that omits the side may be rating one evaluation of
+    # both extremities (DC 5269 plantar fasciitis is "unilateral or bilateral").
     assert options_for(D(10, "unknown", "unknown")) == [
-        ("none", "unknown"), ("upper", "left"), ("upper", "right"), ("lower", "left"), ("lower", "right")]
+        ("none", "unknown"), ("upper", "left"), ("upper", "right"), ("upper", "both"),
+        ("lower", "left"), ("lower", "right"), ("lower", "both")]
     assert options_for(D(10, "unknown", "left")) == [("none", "left"), ("upper", "left"), ("lower", "left")]
-    assert options_for(D(10, "lower", "unknown")) == [("lower", "left"), ("lower", "right")]
+    assert options_for(D(10, "lower", "unknown")) == [("lower", "left"), ("lower", "right"), ("lower", "both")]
     assert options_for(D(10, "lower", "right")) == [("lower", "right")]
     assert options_for(D(10, "none", "unknown")) == [("none", "unknown")]
 
@@ -98,7 +101,9 @@ def test_a_sideless_pair_is_material_and_each_answer_carries_its_outcome():
                 D(10, "none", "unknown")])
     assert m.answers_matter and not m.settled
     assert m.possible == (70, 80)
-    assert m.outcomes_for(2) == {("lower", "left"): (80,), ("lower", "right"): (70,)}
+    # both: M21-1 V.iv.1.C.4.b puts a single bilateral evaluation into the
+    # factor when another compensable disability of the same pair is rated.
+    assert m.outcomes_for(2) == {("lower", "left"): (80,), ("lower", "right"): (70,), ("lower", "both"): (80,)}
     assert m.outcomes_for(1) == {}, "a condition with nothing unknown has no options"
 
 
@@ -188,7 +193,18 @@ def test_whenever_a_result_is_settled_the_reported_degree_is_that_result():
             first = [(p, g, s) for p, (g, s) in zip(combo, shape)]
             for index, (g, s) in zip(m.unknown, m.by_answers[0][0]):
                 first[index] = (first[index][0], g, s)
-            paired = [Paired(p, g, s) for p, g, s in first if g in ("upper", "lower") and s in ("left", "right")]
+            # Written out here rather than borrowed from recheck.materiality:
+            # sided arm/leg ratings always pair; a single both-sides rating
+            # pairs when another compensable rating of the same pair exists
+            # (M21-1 V.iv.1.C.4.b). Settled results never hinge on the open case.
+            paired = []
+            for n, (p, g, s) in enumerate(first):
+                if g not in ("upper", "lower"):
+                    continue
+                if s in ("left", "right"):
+                    paired.append(Paired(p, g, s))
+                elif s == "both" and any(q >= 10 and h == g for k, (q, h, _) in enumerate(first) if k != n):
+                    paired.append(Paired(p, g, s))
             assert evaluate(list(combo), paired=paired).final_degree == reported
     assert checked > 500
 
@@ -235,8 +251,8 @@ def test_a_material_sideless_pair_interrupts_with_its_stakes(tmp_path):
     assert reason["possible_results"] == [70, 80]
     assert reason["stated"] == 70
     (asked,) = reason["conditions"]
-    assert (asked["index"], asked["missing"], asked["accepted"]) == (2, ["side"], ["left", "right", "unknown"])
-    assert asked["outcomes"] == {"lower-left": [80], "lower-right": [70]}
+    assert (asked["index"], asked["missing"], asked["accepted"]) == (2, ["side"], ["left", "right", "both", "unknown"])
+    assert asked["outcomes"] == {"lower-left": [80], "lower-right": [70], "lower-both": [80]}
     assert "compute" not in nodes_run(store, "pair")
 
 
