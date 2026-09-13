@@ -153,7 +153,9 @@ def test_a_condition_name_that_is_only_the_end_of_a_split_sentence_is_refused(sp
     ],
 )
 def test_wrapped_all_caps_prose_is_refused_not_read_as_a_fragment(body):
-    """"STRAIN" alone has no anatomy; it must never reach the arithmetic."""
+    """"STRAIN" alone has no anatomy; it must never reach the arithmetic.
+    The first and last shapes were read as fragments before; the middle two
+    were already refused and are kept as locks."""
     refused(HEADER + body + "\n\nPTSD IS CONTINUED AS 30 PERCENT DISABLING.\n\n"
             "YOUR COMBINED EVALUATION FOR COMPENSATION IS 40 PERCENT.\n")
 
@@ -179,3 +181,254 @@ def test_a_heading_line_directly_above_a_rating_still_ends_the_letterhead():
               "Left cubital tunnel syndrome is continued as 20 percent disabling.\n"
               "Your combined evaluation for compensation is 20 percent.\n")
     assert read(letter) == [("Left cubital tunnel syndrome", 20)]
+
+
+def test_a_condition_name_starting_with_a_rating_verb_is_refused_however_it_arose():
+    """_NOT_A_NAME_START is the guard, whatever split the sentence."""
+    assert "mid-sentence" in refused(prose(
+        "Service connection for tinnitus is granted with an evaluation of 10 percent. Has been granted "
+        "with an evaluation of 10 percent.", stated=20))
+
+
+# --------------------------------------------------------------------------
+# ARITH-F1: every percent mark, however its number is written
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "third",
+    [
+        "Service connection for limitation of flexion of the right knee is granted. A 10-percent evaluation is "
+        "assigned effective January 9, 2024.",
+        "Service connection for limitation of flexion of the right knee is granted with an evaluation of ten (10) "
+        "percent effective January 9, 2024.",
+        "Service connection for limitation of flexion of the right knee is granted with a ten-percent evaluation.",
+        "Service connection for limitation of flexion of the right knee is granted at 10 pct. effective January 9, "
+        "2024.",
+        "Service connection for limitation of flexion of the right knee is granted; evaluation 10٪.",
+    ],
+    ids=["10-percent", "ten-(10)-percent", "ten-percent", "pct", "arabic-percent-sign"],
+)
+def test_a_percentage_in_any_spelling_is_accounted_for_or_refused(third):
+    """Before: the third rating was dropped; 40% against a correct 50%, exit 0."""
+    refused(prose(
+        "Service connection for post-traumatic stress disorder is granted with an evaluation of 30 percent.",
+        "Service connection for limitation of flexion of the left knee is granted with an evaluation of 10 percent.",
+        third, stated=50))
+
+
+def test_the_unread_percentage_is_named_as_written():
+    reason = refused(prose("Service connection for tinnitus is granted with an evaluation of 10 percent.",
+                           "A 10-percent evaluation is assigned for left knee strain.", stated=20))
+    assert "10-percent" in reason
+
+
+def test_the_unread_percentage_reaches_the_cli_as_could_not_read(tmp_path):
+    letter = prose(
+        "Service connection for post-traumatic stress disorder is granted with an evaluation of 30 percent.",
+        "Service connection for limitation of flexion of the left knee is granted with an evaluation of 10 percent.",
+        "Service connection for limitation of flexion of the right knee is granted. A 10-percent evaluation is "
+        "assigned.", stated=50)
+    code, output = audit(tmp_path, "hyphen", letter, "--brief")
+    assert code == EXIT_CANNOT_PROCEED and "COULD NOT READ THE LETTER" in output
+    assert "DISCREPANCY" not in output
+
+
+@pytest.mark.parametrize(
+    "letter",
+    [
+        prose("Service connection for post-traumatic stress disorder is granted with an evaluation of 30 percent.",
+              "Service connection for limitation of flexion of the left knee and limitation of flexion of the right "
+              "knee is granted with an evaluation of 10 percent each.", stated=50),
+        prose("Service connection for left knee strain and right knee strain is granted with evaluations of 10 "
+              "and 20 percent, respectively.", stated=30),
+        tabular("  1. Scars, left and right knee ...... 10% each", stated=20),
+    ],
+    ids=["prose-each", "prose-respectively", "row-each"],
+)
+def test_one_statement_giving_percentages_to_several_conditions_is_refused(letter):
+    """Before: "10 percent each" was read as ONE rating; 40% against 50%."""
+    assert "each" in refused(letter)
+
+
+def test_percent_like_letters_inside_other_words_are_not_percentages():
+    """Control: "upper central" contains "per cent" only across a word boundary."""
+    letter = prose("Service connection for tinnitus is granted with an evaluation of 10 percent. Upper central "
+                   "incisor noted.", stated=10)
+    assert read(letter) == [("tinnitus", 10)]
+
+
+# --------------------------------------------------------------------------
+# ARITH-F2: one condition, however its name is repeated
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        "Evaluation of the left knee strain is increased to 30 percent effective March 1, 2025.",
+        "Evaluation of left knee strain (DC 5260) is increased to 30 percent effective March 1, 2025.",
+        "Evaluation of Left Knee Strain, is increased to 30 percent effective March 1, 2025.",
+    ],
+    ids=["article", "code", "case-and-punctuation"],
+)
+def test_a_staged_rating_under_a_near_identical_name_is_not_counted_twice(second):
+    """Before ("the", "(DC 5260)"): 40, 20 and 30 counted, 70% against a
+    correct 60%, exit 0. Case and a trailing comma were already folded."""
+    letter = prose(
+        "Service connection for post-traumatic stress disorder is granted with an evaluation of 40 percent.",
+        "Service connection for left knee strain is granted with an evaluation of 20 percent effective "
+        "January 9, 2024.", second, stated=60)
+    assert "more than once" in refused(letter)
+
+
+def test_an_acronym_that_repeats_the_name_does_not_make_it_a_new_condition():
+    letter = prose(
+        "Service connection for post-traumatic stress disorder is granted with an evaluation of 30 percent.",
+        "Evaluation of post-traumatic stress disorder (PTSD) is increased to 50 percent effective March 1, 2025.",
+        stated=50)
+    assert "more than once" in refused(letter)
+
+
+def test_different_sides_stay_different_conditions():
+    """Control: normalising must not merge a left and a right knee."""
+    letter = prose("Service connection for left knee strain is granted with an evaluation of 10 percent.",
+                   "Service connection for the right knee strain (DC 5260) is granted with an evaluation of "
+                   "10 percent.", stated=20)
+    assert read(letter) == [("left knee strain", 10), ("the right knee strain (DC 5260)", 10)]
+
+
+# --------------------------------------------------------------------------
+# ARITH-F9: what follows a stop heading
+# --------------------------------------------------------------------------
+
+TABLE = ("  1. Post-traumatic stress disorder ...... 30%", "  2. Scar, left knee ...... 10%")
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [
+        "  Scar, right knee ...... 10%",
+        "  3. Limitation of flexion, right\n     knee ...... 10%",
+        "  3. Scar, left knee ...... 10%",
+        "  Scar, left knee ...... 10%",
+    ],
+    ids=["unnumbered", "wrapped", "identical-row-numbered-on", "identical-row-unnumbered"],
+)
+def test_a_row_after_a_mid_list_heading_is_refused_unless_it_restates_its_own_row(cut):
+    """Before: rows 1-2 read, the third cut; 40% against a correct 50%, exit 0."""
+    letter = ("RATING DECISION\n\n" + "\n".join(TABLE) + "\n\nEvidence\n  VA examination dated March 1, 2024.\n"
+              + cut + "\n\nCOMBINED EVALUATION FOR COMPENSATION: 50%\n")
+    assert "Evidence" in refused(letter)
+
+
+def test_a_wrapped_row_after_the_heading_reaches_the_cli_as_exit_3(tmp_path):
+    letter = ("RATING DECISION\n\n" + "\n".join(TABLE) + "\n\nEvidence\n  VA examination dated March 1, 2024.\n"
+              "  3. Limitation of flexion, right\n     knee ...... 10%\n\nCOMBINED EVALUATION FOR COMPENSATION: 50%\n")
+    code, output = audit(tmp_path, "wrapped", letter, "--brief")
+    assert code == EXIT_CANNOT_PROCEED and "COULD NOT READ THE LETTER" in output
+
+
+def test_a_row_restated_with_its_own_number_under_reasons_is_accepted():
+    """Control (passes before and after)."""
+    letter = tabular(*TABLE, stated=40, after="\nREASONS FOR DECISION\n  2. Scar, left knee ...... 10%\n")
+    assert read(letter) == [("Post-traumatic stress disorder", 30), ("Scar, left knee", 10)]
+
+
+@pytest.mark.parametrize(
+    "restatement",
+    [
+        "The evaluation of limitation of flexion of the right knee is increased to 20 percent because flexion is "
+        "limited to 30 degrees.",
+        # The row reads "Tinnitus (DC 6260)".
+        "Evaluation of tinnitus is continued as 10 percent disabling because it is recurrent.",
+    ],
+    ids=["reworded-name", "without-the-code"],
+)
+def test_reasons_restating_a_row_under_a_differently_written_name_is_accepted(restatement):
+    """Before: fixture 01 with this REASONS section was refused as a cut list."""
+    letter = (LETTERS / "01_tabular.txt").read_text(encoding="utf-8") + "\nREASONS FOR DECISION\n\n" + restatement + "\n"
+    assert [percent for _, percent in read(letter)] == [60, 20, 10, 10]
+
+
+def test_reasons_restating_with_an_acronym_is_accepted():
+    letter = tabular("  1. Post-traumatic stress disorder ...... 50%", "  2. Tinnitus ...... 10%", stated=60,
+                     after="\nREASONS FOR DECISION\nEvaluation of post-traumatic stress disorder (PTSD) is increased "
+                           "to 50 percent because of reduced reliability.\n")
+    assert read(letter) == [("Post-traumatic stress disorder", 50), ("Tinnitus", 10)]
+
+
+def test_reasons_naming_a_different_percentage_is_still_refused():
+    """Control (refused before and after): same name, different value."""
+    letter = (LETTERS / "01_tabular.txt").read_text(encoding="utf-8") + (
+        "\nREASONS FOR DECISION\n\nThe evaluation of limitation of flexion of the right knee is increased to "
+        "30 percent.\n")
+    refused(letter)
+
+
+# --------------------------------------------------------------------------
+# Form feeds and the cost of whitespace
+# --------------------------------------------------------------------------
+
+def test_a_form_feed_before_a_numbered_row_is_still_a_row():
+    """Before: "1 numbered lines but 2 rating rows"; a pdftotext page break."""
+    letter = ("RATING DECISION\n\n  1. Post-traumatic stress disorder ...... 30%\n"
+              "\f  2. Tinnitus ...... 10%\n\nCOMBINED EVALUATION FOR COMPENSATION: 40%\n")
+    assert read(letter) == [("Post-traumatic stress disorder", 30), ("Tinnitus", 10)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "\n" * 20_000 + "x",
+        "\f\n" * 20_000,
+        "DECISION\n\n  1. a" + "." * 20_000 + "\n",
+        "DECISION\n\n  1. a" + " " * 20_000 + "x\n",
+    ],
+    ids=["blank-lines", "form-feed-lines", "leader-dots", "spaces"],
+)
+def test_whitespace_and_leader_runs_parse_in_linear_time(text):
+    """Before: 10 s, 17 s, 61 s and 24 s. "^\\s*" crossed line breaks, and the
+    leader was retried from every dot or space of a run."""
+    started = time.monotonic()
+    parse(text)
+    assert time.monotonic() - started < 2
+
+
+# --------------------------------------------------------------------------
+# Look-alike and invisible characters
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "letter",
+    [
+        prose("Service connection for tinnitus is granted with an evaluation of 10 percent.",
+              "Service connection for left knee strain is granted at 10 pеrcent.", stated=10),
+        prose("Service connection for tinnitus is granted with an evaluation of 10 percent.",
+              "Service connection for left knee strain is granted with an evaluation of 10 pеrcent.",
+              stated=10),
+    ],
+    ids=["unread-wording", "anchor-wording"],
+)
+def test_a_cyrillic_letter_hiding_a_percentage_is_refused(letter):
+    """A lock, not a regression: this passed before, but nothing failed when
+    _lookalike_problem was switched off. The condition names here are clean
+    Latin, so only the mixed-alphabet check can see the Cyrillic "е"; without
+    it the knee rating vanished from the list."""
+    assert "alphabets" in refused(letter)
+
+
+def test_a_modifier_letter_apostrophe_reads_as_an_apostrophe():
+    """Before: refused as a word mixing alphabets."""
+    letter = prose("Service connection for right De Quervainʼs tenosynovitis is granted with an evaluation of "
+                   "10 percent.", stated=10)
+    assert read(letter) == [("right De Quervain's tenosynovitis", 10)]
+
+
+def test_a_braille_blank_inside_a_word_is_refused():
+    """Before: "kn<U+2800>ee" was read, and recognised as nothing."""
+    letter = tabular("  1. Left wrist strain ...... 30%", "  2. Tenosynovitis, right kn⠀ee ...... 30%", stated=60)
+    assert "braille" in refused(letter)
+
+
+def test_an_enclosing_mark_is_folded_like_other_marks():
+    letter = tabular("  1. Left wrist strain ...... 30%", "  2. Tenosynovitis, right kn⃝ee ...... 30%", stated=60)
+    assert [r.extremity_group for r in parse(letter).ratings] == ["upper", "lower"]
