@@ -116,11 +116,16 @@ def test_an_unknown_group_is_material_when_being_a_leg_would_pair_it():
 
 
 def test_a_single_both_sides_evaluation_whose_reading_matters():
-    """M4: migraine 20% and one 30% evaluation naming both knees -> 40% or 50%."""
-    m = assess([D(20, "none", "unknown"), D(30, "lower", "both")])
+    """M4: one 30% evaluation naming both knees, nothing else in the legs, and
+    both arms rated (left 20, right 10) - M21-1's open case -> 50% or 60%.
+
+    This used migraine 20% and the knees alone. M21-1 settles that case (no
+    factor: 40%), and treating it as open was red-team finding ARITH-F6; see
+    tests/test_rt_graph.py."""
+    m = assess([D(20, "upper", "left"), D(10, "upper", "right"), D(30, "lower", "both")])
     assert m.unknown == ()
     assert m.reading_matters and not m.answers_matter
-    assert m.possible == (40, 50)
+    assert m.possible == (50, 60)
 
 
 def test_a_single_both_sides_evaluation_whose_reading_does_not_matter():
@@ -281,19 +286,21 @@ def _both_letter(tmp_path, first: tuple[str, int], stated: int):
 def test_a_both_sides_evaluation_that_changes_the_result_is_undetermined(tmp_path):
     """M4: never computed, exit 3, and the report shows what it could be."""
     store_root = tmp_path / "runs"
-    code, out, _ = main("audit", _both_letter(tmp_path, ("Migraine headaches", 20), 40), "--case", "both",
-                        store=store_root)
+    # M21-1's open case (see test_a_single_both_sides_evaluation_whose_reading_matters).
+    letter = tabular_letter(tmp_path / "both.txt", [("Left shoulder strain", 20), ("Right shoulder strain", 10),
+                            ("Bilateral knee strain", 30)], stated=50)
+    code, out, _ = main("audit", letter, "--case", "both", store=store_root)
     assert code == EXIT_CANNOT_PROCEED
     from recheck.case import CaseStore
 
     store = CaseStore(store_root)
     case = store.load("both")
     assert case.status == "undetermined"
-    assert case.possible_degrees == [40, 50]
+    assert case.possible_degrees == [50, 60]
     assert case.recomputed_degree is None
     assert "compute" not in nodes_run(store, "both")
     assert "UNDETERMINED - NOT COMPUTED" in out
-    assert "40% or 50%" in out
+    assert "50% or 60%" in out
     assert "recomputed final degree" not in out
     assert "NO DISCREPANCY FOUND" not in out
 
@@ -329,7 +336,7 @@ def test_no_result_is_computed_for_a_case_that_is_not_settled(tmp_path, status):
     rows = {
         "awaiting_human": [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
                            ("Limitation of motion of the knee", 10), ("Tinnitus", 10)],
-        "undetermined": [("Migraine headaches", 20), ("Bilateral knee strain", 30)],
+        "undetermined": [("Left shoulder strain", 20), ("Right shoulder strain", 10), ("Bilateral knee strain", 30)],
     }[status]
     letter = tabular_letter(tmp_path / "x.txt", rows, stated=70)
     store, _ = run_audit(tmp_path / "runs", "x", letter)

@@ -29,24 +29,50 @@ enters the bilateral factor:
 The first case is applied here: the single evaluation joins the group when
 another compensable disability of the same pair of extremities is rated (the
 Board did exactly this in Citation Nr 1519449: bilateral feet 10, right knee
-10, left knee 10 -> 27, plus 2.7). The second case - the rest of the
-calculation is not spelled out - is enumerated both ways, and if the reading
-changes the result the case is UNDETERMINED rather than guessed.
+10, left knee 10 -> 27, plus 2.7). When neither case holds, M21-1 settles it
+the other way - no factor (the Board called adding one to a lone bilateral
+evaluation pyramiding, Citation Nr 0003457) - and nothing is enumerated. The
+second case - the rest of the calculation is not spelled out - is enumerated
+both ways, and so is the 4.26(d) search leaving the evaluation ALONE in the
+factor after removing the disability that let it in. If the reading changes
+the result the case is UNDETERMINED rather than guessed.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import itertools
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
-from recheck.cfr.rating import Evaluation, Paired, evaluate
+from recheck.cfr.rating import COMPENSABLE_MINIMUM, Evaluation, Paired, bilateral_group, evaluate
 from recheck.classify import Decision
 
 # Enumeration is exhaustive or it is not used. A letter with so many unknowns
-# that this is exceeded is asked about rather than silently sampled.
+# that this is exceeded is reported UNDETERMINED rather than silently sampled.
+#
+# It counts completions: combinations of answers to the unknown facts. The
+# two readings of a single both-sides evaluation are not counted here. They
+# used to be, doubling every letter, so four ordinary 10% terms outside the
+# lexicon (7^4 x 2 = 4802) went over the cap - and the over-cap path then
+# crashed the assess node with IndexError.
 MAX_COMPLETIONS = 4096
+
+# The completion count does not bound time: each distinct evaluation runs a
+# 4.26(d) search over up to 2^n subsets of its bilateral group. Twelve arm
+# and leg ratings with six unstated sides took 8.4 minutes of CPU, and one
+# such letter stalls a whole sweep. The arithmetic of the search is now
+# cached (recheck.cfr.rating), and a letter can only ever need as many
+# distinct results as its percentages have sub-multisets, so what is left
+# grows with the subsets visited - budgeted here, summed over DISTINCT
+# evaluations (completions that produce the same facts are evaluated once).
+# A count, not a clock, so the same letter gets the same answer on every
+# machine. 2^20 subsets is a few seconds; that 12-rating letter needs about
+# 750,000 and completes. Past the budget the result is UNDETERMINED, never
+# sampled.
+MAX_SEARCH_WORK = 1 << 20
 
 GROUPS = ("upper", "lower")
 SIDES = ("left", "right")
@@ -68,6 +94,44 @@ def options_for(decision: Decision) -> list[tuple[str, str]]:
     return [(group, side)]
 
 
+def _enumerated_options(decision: Decision) -> list[tuple[str, str]]:
+    """The options assess() has to try for one unknown condition.
+
+    A non-compensable (0%) evaluation can never be a member of the bilateral
+    factor (4.26(c); the engine drops it before forming the group), so every
+    option gives the same degree and one stands for all of them. Trying all
+    seven multiplied the completions by seven for nothing and pushed ordinary
+    letters over the cap.
+    """
+    options = options_for(decision)
+    return options if decision.percent >= COMPENSABLE_MINIMUM else options[:1]
+
+
+def _both_case(facts: Sequence[tuple[int, str, str]], index: int) -> str:
+    """Which M21-1 V.iv.1.C.4.b case the both-sides evaluation at `index` is in.
+
+      "joins"     another compensable disability of its own pair is rated
+      "open"      nothing else in its pair, but both extremities of the other
+                  pair are rated: the factor applies, the calculation is not
+                  spelled out
+      "excluded"  neither: M21-1 applies no factor to it
+
+    Other members are told apart by position, not by value. Bilateral pes
+    planus 30 and bilateral plantar fasciitis 30 are each other's "other"
+    disability; comparing value tuples made each disappear from the other's
+    view, so neither joined and a 70% letter came out UNDETERMINED.
+    """
+    _, group, _ = facts[index]
+    compensable = [(i, g, s) for i, (p, g, s) in enumerate(facts) if g in GROUPS and p >= COMPENSABLE_MINIMUM]
+    if any(i != index and g == group for i, g, _ in compensable):
+        return "joins"
+    other = "lower" if group == "upper" else "upper"
+    other_sides = {s for _, g, s in compensable if g == other}
+    if {"left", "right"} <= other_sides or "both" in other_sides:
+        return "open"
+    return "excluded"
+
+
 def paired_disabilities(
     facts: Sequence[tuple[int, str, str]], *, both_in_factor: bool
 ) -> list[Paired]:
@@ -75,39 +139,41 @@ def paired_disabilities(
 
     A single evaluation covering both extremities ("both") is included when
     M21-1 V.iv.1.C.4.b settles it - another compensable disability of the same
-    pair is rated - and otherwise only under the `both_in_factor` reading.
+    pair is rated - never when M21-1 settles it the other way, and in M21-1's
+    open case only under the `both_in_factor` reading.
     """
-    compensable = [(p, g, s) for p, g, s in facts if g in GROUPS and p >= 10]
     out: list[Paired] = []
-    for percent, group, side in facts:
+    for index, (percent, group, side) in enumerate(facts):
         if group not in GROUPS:
             continue
         if side in SIDES:
             out.append(Paired(percent, group, side))
         elif side == "both":
-            others_in_pair = [f for f in compensable if f[1] == group and f != (percent, group, side)]
-            if others_in_pair or both_in_factor:
+            case = _both_case(facts, index)
+            if case == "joins" or (case == "open" and both_in_factor):
                 out.append(Paired(percent, group, side))
     return out
 
 
 def both_reading_is_open(facts: Sequence[tuple[int, str, str]]) -> bool:
-    """True when a single both-sides evaluation is in M21-1's unsettled case.
+    """True when the result for these facts may depend on how M21-1 is read.
 
-    That is: nothing else compensable is rated in its own pair of
-    extremities, but both of the OTHER pair's extremities are. M21-1 says the
-    factor applies then, without saying how the calculation runs.
+    That is when a compensable single both-sides evaluation is in M21-1's
+    open case, or joins the factor under its first case - because the 4.26(d)
+    search can then leave out the disability that let it in and leave it in
+    the factor alone. For any other facts the two readings are the same
+    calculation.
     """
-    compensable = [(p, g, s) for p, g, s in facts if g in GROUPS and p >= 10]
-    for percent, group, side in facts:
-        if side != "both" or group not in GROUPS or percent < 10:
-            continue
-        own = [f for f in compensable if f[1] == group and f != (percent, group, side)]
-        other = "lower" if group == "upper" else "upper"
-        other_sides = {s for _, g, s in compensable if g == other}
-        if not own and ({"left", "right"} <= other_sides or "both" in other_sides):
-            return True
-    return False
+    return any(
+        side == "both" and group in GROUPS and percent >= COMPENSABLE_MINIMUM
+        and _both_case(facts, index) != "excluded"
+        for index, (percent, group, side) in enumerate(facts)
+    )
+
+
+def readings_for(facts: Sequence[tuple[int, str, str]]) -> tuple[bool, ...]:
+    """The readings of a single both-sides evaluation worth running, strict first."""
+    return (False, True) if both_reading_is_open(facts) else (False,)
 
 
 def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool = False) -> Evaluation:
@@ -116,7 +182,21 @@ def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool 
     return evaluate(
         [d.percent for d in decisions],
         paired=paired_disabilities(facts, both_in_factor=both_in_factor),
+        lone_both_in_factor=both_in_factor,
     )
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _final_degree(ratings: tuple[int, ...], paired: tuple[tuple[int, str, str], ...], reading: bool) -> int:
+    """One engine run, keyed by the multisets that decide it.
+
+    The final degree depends on which ratings there are and which of them
+    are paired, not on their order, so completions that differ only in which
+    of two identical evaluations is on which side share one run. The cache
+    also serves the repeat assessments of one letter in one process (the
+    assess node, then compute, then the printed question).
+    """
+    return evaluate(list(ratings), paired=[Paired(*p) for p in paired], lone_both_in_factor=reading).final_degree
 
 
 def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict[int, tuple[str, str]]]:
@@ -160,6 +240,10 @@ class Materiality:
     #: indices of the decisions that have something unknown
     unknown: tuple[int, ...]
     exhaustive: bool
+    #: engine evaluations the enumeration stands for: completions times readings
+    combinations: int = 0
+    #: why the enumeration is not exhaustive, when it is not
+    limit: str | None = None
 
     @property
     def settled(self) -> bool:
@@ -192,35 +276,60 @@ class Materiality:
 def assess(decisions: Sequence[Decision]) -> Materiality:
     """Enumerate every completion of the unknown facts and collect final degrees."""
     unknown = tuple(i for i, d in enumerate(decisions) if d.missing)
-    choices = [options_for(decisions[i]) for i in unknown]
-    # Enumerate both readings only where M21-1 leaves the answer open; a
-    # completion that is not in that case gives the same degree either way.
-    readings = (False, True) if any(d.laterality == "both" or d.laterality == "unknown"
-                                    for d in decisions if d.extremity_group != "none") else (False,)
+    choices = [_enumerated_options(decisions[i]) for i in unknown]
 
-    count = len(readings)
-    for c in choices:
-        count *= len(c)
-    if count > MAX_COMPLETIONS:
-        return Materiality(possible=(), by_answers=(), unknown=unknown, exhaustive=False)
+    completions = math.prod(len(c) for c in choices)
+    if completions > MAX_COMPLETIONS:
+        return Materiality(
+            possible=(), by_answers=(), unknown=unknown, exhaustive=False,
+            limit=(f"the unknown facts can be completed {completions} ways, over the limit of "
+                   f"{MAX_COMPLETIONS}"),
+        )
 
+    # First every completion's engine inputs, and what running them would
+    # cost - so a letter over budget is refused in milliseconds, not after
+    # spending the budget.
     base = [(d.percent, d.extremity_group, d.laterality) for d in decisions]
-    percents = [d.percent for d in decisions]
-    by_answers = []
-    possible: set[int] = set()
+    planned = []
+    work = runs = 0
+    seen: set[tuple[tuple[tuple[int, str, str], ...], bool]] = set()
     for answers in itertools.product(*choices):
         facts = list(base)
         for i, (group, side) in zip(unknown, answers):
             facts[i] = (facts[i][0], group, side)
-        degrees = set()
-        for both_in_factor in readings:
-            paired = paired_disabilities(facts, both_in_factor=both_in_factor)
-            degrees.add(evaluate(percents, paired=paired).final_degree)
+        keys = []
+        # Both readings only where M21-1 leaves the answer open for THIS
+        # completion. Choosing once for the whole letter ran the open reading
+        # wherever any side was unknown, so a lone "bilateral" rating that
+        # M21-1 settles (no factor) came out UNDETERMINED, or raised a
+        # question whose every answer led to the same rating.
+        for reading in readings_for(facts):
+            paired = paired_disabilities(facts, both_in_factor=reading)
+            key = (tuple(sorted((p.percent, p.extremity, p.side) for p in paired)), reading)
+            if key not in seen:
+                seen.add(key)
+                work += 2 ** len(bilateral_group(paired, lone_both_in_factor=reading))
+            keys.append(key)
+        runs += len(keys)
+        planned.append((tuple(answers), keys))
+    if work > MAX_SEARCH_WORK:
+        return Materiality(
+            possible=(), by_answers=(), unknown=unknown, exhaustive=False,
+            limit=(f"trying every completion of the unknown facts needs {work} 4.26(d) combinations, "
+                   f"over the limit of {MAX_SEARCH_WORK}"),
+        )
+
+    ratings = tuple(sorted(d.percent for d in decisions))
+    by_answers = []
+    possible: set[int] = set()
+    for answers, keys in planned:
+        degrees = {_final_degree(ratings, *key) for key in keys}
         possible |= degrees
-        by_answers.append((tuple(answers), tuple(sorted(degrees))))
+        by_answers.append((answers, tuple(sorted(degrees))))
     return Materiality(
         possible=tuple(sorted(possible)),
         by_answers=tuple(by_answers),
         unknown=unknown,
         exhaustive=True,
+        combinations=runs,
     )

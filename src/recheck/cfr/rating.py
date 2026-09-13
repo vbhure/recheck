@@ -32,6 +32,7 @@ upper and lower extremities only.
 
 from __future__ import annotations
 
+import functools
 import itertools
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -58,9 +59,10 @@ class Paired:
 
     side "both" is ONE evaluation covering both extremities of a pair (a
     letter's "bilateral pes planus, 30%"). Whether 4.26 treats such an
-    evaluation as bilateral is not something Recheck decides: it is used only
-    to test whether that question can change a result (recheck.materiality),
-    and no reported figure ever depends on it.
+    evaluation as bilateral is not something Recheck decides beyond what
+    M21-1 settles: recheck.materiality decides which of them are passed in,
+    evaluates the unsettled treatment both ways (see `lone_both_in_factor`
+    on `evaluate`), and no reported figure ever depends on it.
     """
 
     percent: int
@@ -101,19 +103,19 @@ class Evaluation:
 
 
 
-def bilateral_group(disabilities: Sequence[Paired]) -> list[Paired]:
+def bilateral_group(disabilities: Sequence[Paired], *, lone_both_in_factor: bool = True) -> list[Paired]:
     """The disabilities 4.26 puts into the bilateral factor by default.
 
     An extremity pair qualifies when there is a compensable disability on
     BOTH its left and right side (4.26(c)). Every compensable disability of a
     qualifying pair enters the factor. If both pairs qualify, all of them form
-    one group (4.26(b)).
+    one group (4.26(b)). See `evaluate` for `lone_both_in_factor`.
     """
     compensable = [d for d in disabilities if d.percent >= COMPENSABLE_MINIMUM]
     qualifying = {
         extremity
         for extremity in EXTREMITIES
-        if _sides_covered([d for d in compensable if d.extremity == extremity]) == set(SIDES)
+        if _pair_may_take_factor([d for d in compensable if d.extremity == extremity], lone_both_in_factor)
     }
     return [d for d in compensable if d.extremity in qualifying]
 
@@ -125,12 +127,29 @@ def _sides_covered(members: Sequence[Paired]) -> set[str]:
     return covered
 
 
-def _is_valid_group(members: Sequence[Paired]) -> bool:
+def _pair_may_take_factor(members: Sequence[Paired], lone_both_in_factor: bool) -> bool:
+    """Whether these members of ONE pair of extremities may carry the factor.
+
+    Both sides must be covered. A single evaluation that names both sides
+    covers both on its own, but M21-1 V.iv.1.C.4.b applies the factor to it
+    only alongside "an independently ratable condition in one of the involved
+    extremities". Under the strict reading that other disability must be in
+    the factor with it; `lone_both_in_factor` is the reading that lets it
+    stand there alone.
+    """
+    if _sides_covered(members) != set(SIDES):
+        return False
+    if not lone_both_in_factor and len(members) == 1 and members[0].side == "both":
+        return False
+    return True
+
+
+def _is_valid_group(members: Sequence[Paired], lone_both_in_factor: bool = True) -> bool:
     """A non-empty set the factor may be applied to: both sides of each pair used."""
     if not members:
         return False
     for extremity in {m.extremity for m in members}:
-        if _sides_covered([m for m in members if m.extremity == extremity]) != set(SIDES):
+        if not _pair_may_take_factor([m for m in members if m.extremity == extremity], lone_both_in_factor):
             return False
     return True
 
@@ -183,11 +202,28 @@ def _with_factor(others: Sequence[int], members: Sequence[Paired]) -> tuple[int,
     return value, subtotal
 
 
+@functools.lru_cache(maxsize=1 << 16)
+def _degree_with_factor(others: tuple[int, ...], members: tuple[int, ...]) -> int:
+    """Final degree with the factor applied to `members`: one 4.26(d) candidate.
+
+    The same arithmetic as `_with_factor`, on sorted percentages, cached.
+    The search tries up to 2^12 subsets per evaluation, and recheck.materiality
+    runs it once per completion of a letter's unknown facts - completions that
+    mostly differ in which side a rating is on, not in the percentages being
+    combined. Uncached, twelve arm and leg ratings with six unstated sides took
+    8.4 minutes of CPU.
+    """
+    # _with_factor reads only the percentages; the extremity and side of these
+    # placeholders were checked by the caller (_is_valid_group) and play no part.
+    return final_degree(_with_factor(list(others), [Paired(p, "upper", "left") for p in members])[0])
+
+
 def evaluate(
     ratings: Sequence[int],
     bilateral_pair: Sequence[int] | None = None,
     *,
     paired: Sequence[Paired] | None = None,
+    lone_both_in_factor: bool = True,
 ) -> Evaluation:
     """Determine the final degree of disability.
 
@@ -199,6 +235,15 @@ def evaluate(
         bilateral_pair: Shorthand for exactly two disabilities of one pair of
             extremities, on opposite sides. Kept because the regulation's own
             worked examples are stated that way.
+        lone_both_in_factor: Whether a single evaluation naming both sides
+            may be the ONLY member of its pair in the factor. False is the
+            strict reading of M21-1 V.iv.1.C.4.b. It matters most in the
+            4.26(d) search: bilateral pes planus 50 and a right knee 10 enter
+            the factor together, but leaving the knee out left the pes planus
+            alone in the factor - the case M21-1 says gets no factor - and
+            that reading alone turned 90% into a reported 100%. The caller
+            (recheck.materiality) evaluates both readings wherever this can
+            arise and withholds the figure when they differ.
 
     Returns:
         An Evaluation carrying the final degree, the combined value, the full
@@ -225,7 +270,7 @@ def evaluate(
 
     plain_value, plain_steps = _fold(ratings, "all ratings, no bilateral factor")
     plain_degree = final_degree(plain_value)
-    group = bilateral_group(paired)
+    group = bilateral_group(paired, lone_both_in_factor=lone_both_in_factor)
 
     if not group:
         if not paired:
@@ -266,12 +311,12 @@ def evaluate(
             kept = [group[i] for i in kept_idx]
             if size == 0:
                 degree = plain_degree
-            elif not _is_valid_group(kept):
+            elif not _is_valid_group(kept, lone_both_in_factor):
                 continue
             else:
                 left_out = [group[i].percent for i in range(len(group)) if i not in kept_idx]
-                value, _ = _with_factor([*others, *left_out], kept)
-                degree = final_degree(value)
+                degree = _degree_with_factor(tuple(sorted([*others, *left_out])),
+                                             tuple(sorted(m.percent for m in kept)))
             if degree > best_degree:
                 best_degree, best_members = degree, tuple(kept)
 

@@ -243,6 +243,7 @@ class AssessNode(MultiAgentBase):
             # can be answered again, rather than stranding it.
             return self._interrupt(case, decisions, assess_materiality(decisions))
 
+        refined = []
         for index, (group, side) in sorted(answers.items()):
             d = decisions[index]
             parts = []
@@ -253,6 +254,8 @@ class AssessNode(MultiAgentBase):
             if d.side_missing and side != "unknown":
                 d.laterality, d.side_by = side, Actor.HUMAN
                 parts.append(f"side {side}")
+            if parts and d.missing:
+                refined.append(index)
             trace.add(
                 Actor.HUMAN,
                 "Answer",
@@ -260,15 +263,30 @@ class AssessNode(MultiAgentBase):
                 value=", ".join(parts) if parts else "does not know",
                 evidence="supplied by the reviewer; not stated in the letter",
             )
-        case.human_answers = {str(k): "-".join(v) for k, v in sorted(answers.items())}
+        # Answers accumulate across rounds. A follow-up question (see _settle)
+        # asks only for what is still missing, so keeping this round's answers
+        # alone would drop the earlier ones from the case and from the basis
+        # the report gives for its figure.
+        case.human_answers = {**case.human_answers,
+                              **{str(k): "-".join(v) for k, v in sorted(answers.items())}}
         case.rejected_answer = None
         case.store_decisions(decisions)
-        return self._settle(case, decisions, trace, after_answers=True)
+        return self._settle(case, decisions, trace, after_answers=True, refined=bool(refined))
 
     def _first_pass(self, case: Case, decisions: list[Decision], trace: Trace) -> MultiAgentResult:
         return self._settle(case, decisions, trace, after_answers=False)
 
-    def _settle(self, case: Case, decisions: list[Decision], trace: Trace, *, after_answers: bool) -> MultiAgentResult:
+    def _settle(self, case: Case, decisions: list[Decision], trace: Trace, *, after_answers: bool,
+                refined: bool = False) -> MultiAgentResult:
+        """Route the case on what the unknown facts can do to the rating.
+
+        `refined` means an answer this round established one fact of a
+        condition and left another missing - the reviewer gave the group
+        ("lower"), an answer the question itself offers, but not the side.
+        Such a case is asked again for what remains. It used to go straight
+        to UNDETERMINED, a terminal state: the reviewer who knew the side
+        next could not give it without discarding the case.
+        """
         m = assess_materiality(decisions)
         unknown = [(i, decisions[i]) for i in m.unknown]
         both = [d for d in decisions if d.laterality == "both" and d.extremity_group != "none"]
@@ -278,12 +296,28 @@ class AssessNode(MultiAgentBase):
                       "every fact 4.25 and 4.26 need is established", value="ready to compute")
             return self._ready(case, trace)
 
+        if not m.exhaustive:
+            # Too many possibilities to try them all, so there are no possible
+            # degrees. The branches below were reached with that empty set and
+            # phrasing it raised IndexError inside this node, leaving the case
+            # stuck in 'classified'. Not sampled, and not asked blind - nobody
+            # can say which answers would matter, or what they would lead to.
+            reason = f"too many facts are unknown to try every possibility ({m.limit})"
+            trace.add(Actor.DETERMINISTIC, "Result UNDETERMINED",
+                      f"{reason}. Recheck does not sample a subset of them.", value="not computed")
+            case.status = "undetermined"
+            case.undetermined_reason = reason
+            case.possible_degrees = []
+            case.store_trace(trace)
+            self.store.save(case)
+            return _done()
+
         if m.settled:
             listed = "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)}" for i, d in unknown)
             detail = (
                 (f"unknown: {listed}. " if listed else "")
                 + (f"a single evaluation names both sides ({both[0].condition}). " if both else "")
-                + f"Every one of {len(m.by_answers) * (2 if both else 1)} possible combinations gives "
+                + f"Every one of {m.combinations} possible combinations gives "
                 f"{m.possible[0]}%, so no answer could change the rating."
             )
             trace.add(Actor.DETERMINISTIC, "Unknown facts cannot change the result", detail,
@@ -291,7 +325,7 @@ class AssessNode(MultiAgentBase):
             case.immaterial_unknowns = [i for i, _ in unknown]
             return self._ready(case, trace)
 
-        if m.answers_matter and not after_answers:
+        if m.answers_matter and (not after_answers or refined):
             case.status = "awaiting_human"
             case.possible_degrees = list(m.possible)
             trace.add(
@@ -499,7 +533,18 @@ def parse_answers(
     problems: list[str] = []
     pairs: list[tuple[str, str]] = []
     if isinstance(response, dict):
-        pairs = [(str(k).strip(), str(v).strip().lower()) for k, v in response.items()]
+        # Only text is an answer. str() made a JSON null into "None", which
+        # lowercases to the accepted answer "none": an integrator sending
+        # null for "no answer" told Recheck the condition is not an arm or a
+        # leg, and a figure was reported on a fact nobody supplied.
+        for k, v in response.items():
+            if isinstance(k, bool) or not isinstance(k, (str, int)):
+                problems.append(f"{k!r} is not a condition index")
+            elif not isinstance(v, str):
+                problems.append(f"the answer for condition {k} must be text such as \"left\", "
+                                f"not {type(v).__name__}")
+            else:
+                pairs.append((str(k).strip(), v.strip().lower()))
     elif isinstance(response, str):
         clauses = [c.strip() for c in response.replace(";", ",").split(",") if c.strip()]
         for clause in clauses:
@@ -556,6 +601,10 @@ def _interrupt_response(task: Any) -> Any | None:
 
 def _or(values: Sequence[int]) -> str:
     items = [f"{v}%" for v in values]
+    if not items:
+        # Never expected (an unenumerated case does not reach a caller), but
+        # this runs inside a graph node, where an IndexError strands the case.
+        return "not established"
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
 
 
@@ -613,8 +662,61 @@ class NodeTimeline(HookProvider):
         self.store.save(case)
 
 
+# The Strands session id. The session directory already names the case
+# (<store>/<case>/session), so the id need not repeat it. It used to be the
+# case id, which put the id in the path twice - <case>\session\session_<case>
+# \multi_agents\... - and on Windows a 64-character id, which the validator
+# accepts and sweep derives from ordinary file names, overran the 260-character
+# path limit under a store of about 60 characters.
+SESSION_ID = "s"
+
+# The longest name Strands writes under the session: FileSessionManager saves
+# through tempfile.mkstemp(prefix=".strands_", suffix=".tmp"), eight random
+# characters, in the multi-agent directory.
+_STRANDS_TEMP_NAME = ".strands_" + "x" * 8 + ".tmp"
+
+# Windows MAX_PATH is 260 including the terminating NUL.
+_WINDOWS_MAX_PATH = 259
+
+
+def deepest_session_path(store: CaseStore, case_id: str) -> str:
+    """The longest path the graph writes for this case, as the OS will see it."""
+    return os.path.join(
+        os.path.abspath(store.session_dir(case_id)), f"session_{SESSION_ID}", "multi_agents",
+        "multi_agent_recheck", _STRANDS_TEMP_NAME,
+    )
+
+
+def _path_limit() -> int | None:
+    """The longest path this process can create, when the OS imposes one we can hit."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            if winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1:
+                return None
+    except OSError:
+        pass
+    return _WINDOWS_MAX_PATH
+
+
 def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "none") -> Case:
-    """Create the case a new audit writes into. Callers discard any old one first."""
+    """Create the case a new audit writes into. Callers discard any old one first.
+
+    Refuses, before writing anything, a case whose session files would not
+    fit the platform's path limit. Found out later, the session write failed
+    part-way: the case was left 'open', the report blamed the letter ("could
+    not establish enough facts") and a second sweep called it a stopped run.
+    """
+    limit = _path_limit()
+    deepest = deepest_session_path(store, case_id)
+    if limit is not None and len(deepest) > limit:
+        raise ValueError(
+            f"the store path and case id are too long for Windows: this case's session files need a "
+            f"{len(deepest)}-character path and {limit} is the limit. Use a shorter --store or case id."
+        )
     case = Case(case_id, str(source), classifier=classifier, status="open")
     store.save(case)
     return case
@@ -638,7 +740,7 @@ def build_graph(store: CaseStore, case_id: str, source: str, agent_factory: Agen
     builder.set_graph_id("recheck")
     builder.set_hook_providers([NodeTimeline(store, case_id)])
     builder.set_session_manager(
-        FileSessionManager(session_id=case_id, storage_dir=str(store.session_dir(case_id)))
+        FileSessionManager(session_id=SESSION_ID, storage_dir=str(store.session_dir(case_id)))
     )
     return builder.build()
 
@@ -648,8 +750,19 @@ def outstanding_interrupt(graph: Any) -> Interrupt | None:
 
     Read from the graph Strands restored from the session - not from a
     file-exists check - so a case whose session was lost cannot be resumed.
+
+    An activated interrupt is not enough. A resume that raised or was
+    interrupted part-way (a locked case file, Ctrl+C) leaves the session with
+    the interrupt still activated, already holding that attempt's response,
+    but no node waiting on it. Strands resumes such a session by running
+    nothing, so every later resume - correct answer or garbage - printed the
+    same question again and changed nothing, forever. The graph must be
+    INTERRUPTED with a node to continue at.
     """
     state = getattr(graph, "_interrupt_state", None)
     if state is None or not state.activated:
+        return None
+    graph_state = getattr(graph, "state", None)
+    if graph_state is None or graph_state.status != Status.INTERRUPTED or not graph_state.interrupted_nodes:
         return None
     return next(iter(state.interrupts.values()), None)

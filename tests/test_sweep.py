@@ -326,11 +326,14 @@ def test_one_unreadable_document_does_not_stop_the_sweep(tmp_path):
 
 def test_an_undetermined_case_is_its_own_triage_bucket(tmp_path):
     work = tmp_path / "und"
-    tabular_letter(work / "both.txt", [("Migraine headaches", 20), ("Bilateral knee strain", 30)], stated=40)
+    # M21-1's open case for a single both-sides evaluation (a lone one, with no
+    # arms rated, is settled: no factor).
+    tabular_letter(work / "both.txt", [("Left shoulder strain", 20), ("Right shoulder strain", 10),
+                                       ("Bilateral knee strain", 30)], stated=50)
     code, out, _ = main("sweep", work, store=tmp_path / "runs")
     assert code == EXIT_CANNOT_PROCEED
     assert SUMMARY.search(out).groups() == ("1", "0", "0", "0", "1", "0")
-    assert re.search(r"both\s+could be 40% or 50%", out)
+    assert re.search(r"both\s+could be 50% or 60%", out)
 
 
 def test_a_question_from_a_sweep_is_answered_by_a_separate_process(tmp_path):
