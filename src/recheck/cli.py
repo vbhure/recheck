@@ -185,12 +185,12 @@ def _finish(args, store: CaseStore, outcome: Outcome) -> int:
     if outcome.state == Outcome.FAILED:
         print(f"[recheck] {outcome.detail}", file=sys.stderr)
         if store.exists(outcome.case_id):
-            _show(store, outcome.case_id)
+            _show(store, outcome.case_id, brief=getattr(args, "brief", False))
         return EXIT_CANNOT_PROCEED
     if outcome.state == Outcome.AWAITING_HUMAN:
         print(question_text(store, outcome.case_id, _store_flag(args), exiting=True))
         return EXIT_AWAITING_HUMAN
-    _show(store, outcome.case_id)
+    _show(store, outcome.case_id, brief=getattr(args, "brief", False))
     return EXIT_OK if outcome.state == Outcome.COMPLETE else EXIT_CANNOT_PROCEED
 
 
@@ -231,7 +231,7 @@ def question_text(store: CaseStore, case_id: str, store_flag: str, *, exiting: b
     lines += ["", "Recheck asks for facts only. It never asks for a percentage or a combined evaluation.", ""]
     if exiting:
         lines.append(f"Process {os.getpid()} is exiting. The Strands session in "
-                     f"{store.session_dir(case_id)} holds the open question.")
+                     f"{_quoted(store.session_dir(case_id).as_posix())} holds the open question.")
     lines.append("Answer from any later process:")
     lines.append(f"  recheck{store_flag} resume --case {case_id} --answer \"{','.join(placeholder)}\"")
     lines.append("=" * 74)
@@ -373,7 +373,7 @@ def cmd_show(args) -> int:
     store = CaseStore(args.store)
     try:
         case = store.load(args.case)
-        _show(store, args.case)
+        _show(store, args.case, brief=args.brief)
         if case.status == "awaiting_human":
             print(question_text(store, args.case, _store_flag(args), exiting=False))
     except (FileNotFoundError, CaseCorrupt) as exc:
@@ -382,9 +382,9 @@ def cmd_show(args) -> int:
     return EXIT_OK
 
 
-def _show(store: CaseStore, case_id: str) -> None:
+def _show(store: CaseStore, case_id: str, *, brief: bool = False) -> None:
     print()
-    print(render(store.load(case_id)))
+    print(render(store.load(case_id), show_trace=not brief))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -405,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit = sub.add_parser("audit", help="audit one decision letter")
     audit.add_argument("letter")
     audit.add_argument("--case", required=True)
+    audit.add_argument("--brief", action="store_true", help="report without the decision trace")
     add_model_flags(audit)
     audit.set_defaults(func=cmd_audit)
 
@@ -412,6 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--case", required=True)
     resume.add_argument("--answer", required=True,
                         help='facts only, e.g. "2=left,3=right" or "4=upper-left"')
+    resume.add_argument("--brief", action="store_true", help="report without the decision trace")
     resume.set_defaults(func=cmd_resume)
 
     sweep_p = sub.add_parser("sweep", help="audit a directory of letters unattended; report only what needs you")
@@ -421,6 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     show = sub.add_parser("show", help="print a stored case report")
     show.add_argument("--case", required=True)
+    show.add_argument("--brief", action="store_true", help="report without the decision trace")
     show.set_defaults(func=cmd_show)
 
     pre = sub.add_parser("preflight", help="check live-provider configuration WITHOUT an inference call")
