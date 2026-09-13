@@ -182,7 +182,7 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 - **1,131 tests** — 686 of them the Table I file (every published cell), 445 behavioural. `pytest` runs them in about a minute.
 - **Regression tests for every defect found**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), and an adversarial red team. The defects and fixes are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
 - **Hand-derived expectations** for eight caseload letters that each pin one behaviour (three leg disabilities, four extremities, a linked clause, an immaterial unknown, a material question, an unlisted term, a lower recomputation) — [fixtures/caseload/EXPECTED.md](fixtures/caseload/EXPECTED.md).
-- **Clean clone:** install, tests and demo run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10.
+- **Clean clone:** install, the full suite, the demo and every command in this README run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. Two Anthropic-adapter tests skip themselves unless the optional `anthropic` extra is installed.
 
 ## Limitations
 
