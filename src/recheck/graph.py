@@ -42,7 +42,6 @@ holds the domain facts. There is no second hand-written copy of graph state.
 from __future__ import annotations
 
 import hashlib
-import io
 import os
 import pathlib
 from typing import Any, Sequence
@@ -55,6 +54,7 @@ from strands.session.file_session_manager import FileSessionManager
 
 from recheck.case import Case, CaseStore
 from recheck.classify import AgentFactory, Decision, classify_async
+from recheck.extract import pdf_text
 from recheck.extract.deterministic import ExtractedRating, parse
 from recheck.materiality import Materiality, assess as assess_materiality, evaluate_for_report
 from recheck.provenance import Actor, Trace
@@ -78,6 +78,11 @@ MAX_PDF_PAGES = 100
 MAX_DOCUMENT_CHARS = 500_000
 MAX_PDF_STREAM_BYTES = 2_000_000
 MAX_PDF_CONTENT_BYTES = 4_000_000
+# And none of these bounds the time pypdf spends on a Form XObject invoked
+# again and again: a 2.7 KB PDF took 95 s. PDF text is extracted in a child
+# process that is killed at this budget. A real letter reads in well under a
+# second, child start-up included.
+MAX_PDF_SECONDS = 20.0
 
 
 def interrupt_id(case_id: str) -> str:
@@ -131,47 +136,24 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
     too_long = (f"{p.name} yields more than {MAX_DOCUMENT_CHARS:,} characters of text. A rating "
                 f"decision is a few pages; refusing rather than parsing it.")
     if p.suffix.lower() == ".pdf":
-        from pypdf import PdfReader, apply_configuration
-
-        # Scoped to this read: every decompression filter pypdf applies while
-        # loading the document and extracting its text stops at the budget,
-        # raising LimitReachedError (a PyPdfError, so "could not be read").
-        budget = {
-            "zlib_maximum_output_length": MAX_PDF_STREAM_BYTES,
-            "lzw_maximum_output_length": MAX_PDF_STREAM_BYTES,
-            "run_length_maximum_output_length": MAX_PDF_STREAM_BYTES,
-            "array_based_stream_maximum_output_length": MAX_PDF_STREAM_BYTES,
-        }
-        with apply_configuration(**budget):
-            reader = PdfReader(io.BytesIO(data))
-            page_count = len(reader.pages)
-            if page_count > MAX_PDF_PAGES:
-                raise DocumentTooLarge(
-                    f"{p.name} has {page_count} pages, over the {MAX_PDF_PAGES}-page limit."
-                )
-            pages: list[str] = []
-            total = content = 0
-            for page in reader.pages:
-                # Inflating is cheap and pypdf keeps the result; PARSING the
-                # content is the cost, so the budget is checked before it.
-                try:
-                    stream = page.get_contents()
-                    content += len(stream.get_data()) if stream is not None else 0
-                except (AttributeError, KeyError, TypeError):
-                    # A malformed /Contents (a number, a bare dictionary).
-                    # extract_text fails on the same construction and reads
-                    # the page as empty, parsing nothing - so it costs nothing.
-                    pass
-                if content > MAX_PDF_CONTENT_BYTES:
-                    raise DocumentTooLarge(
-                        f"{p.name}'s page content inflates to more than {MAX_PDF_CONTENT_BYTES / 1e6:.0f} MB. "
-                        f"A rating decision is a few pages; refusing rather than parsing it."
-                    )
-                pages.append(page.extract_text() or "")
-                total += len(pages[-1]) + 1
-                if total > MAX_DOCUMENT_CHARS:  # stop at the page that crosses it
-                    raise DocumentTooLarge(too_long)
-        text = "\n".join(pages)
+        # pypdf runs in a child process with a wall-clock budget; see
+        # recheck.extract.pdf_text for why no cap alone could bound it.
+        limits = pdf_text.Limits(max_pages=MAX_PDF_PAGES, max_chars=MAX_DOCUMENT_CHARS,
+                                 max_stream_bytes=MAX_PDF_STREAM_BYTES, max_content_bytes=MAX_PDF_CONTENT_BYTES)
+        outcome = pdf_text.extract(data, p.name, limits, MAX_PDF_SECONDS)
+        if outcome.kind == "timeout":
+            raise DocumentTooLarge(
+                f"{p.name} took more than {MAX_PDF_SECONDS:g} s to read. A rating decision is a few pages; "
+                f"refusing rather than continuing to parse it."
+            )
+        if outcome.kind == "died":
+            # An OSError, so the extract node records "could not be read".
+            raise ChildProcessError(f"the PDF reader stopped without a result ({outcome.value})")
+        if outcome.kind == "error":
+            raise outcome.value  # type: ignore[misc] - what pypdf raised, as in-process
+        if outcome.kind == "too_large":
+            raise DocumentTooLarge(str(outcome.value))
+        text = str(outcome.value)
         if not text.strip():
             raise ScannedDocument(
                 f"{p.name} has no extractable text layer. This document requires OCR, "

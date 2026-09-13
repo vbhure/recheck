@@ -432,3 +432,82 @@ def test_a_braille_blank_inside_a_word_is_refused():
 def test_an_enclosing_mark_is_folded_like_other_marks():
     letter = tabular("  1. Left wrist strain ...... 30%", "  2. Tenosynovitis, right kn⃝ee ...... 30%", stated=60)
     assert [r.extremity_group for r in parse(letter).ratings] == ["upper", "lower"]
+
+
+# --------------------------------------------------------------------------
+# FILES-P4-05: a wall-clock bound on PDF text extraction
+# --------------------------------------------------------------------------
+
+def _form_bomb(form_bytes: int, invocations: int, *, bad_startxref: bool = False) -> bytes:
+    """A one-page PDF of about a kilobyte whose page invokes one Form XObject
+    of drawing operators again and again (stdlib only). pypdf re-parses the
+    form on every invocation; no byte, page or stream cap counts that."""
+    form = zlib.compress(b"BT /F1 10 Tf 72 700 Td (A) Tj ET\n" + b"0 0 m 1 1 l S\n" * (form_bytes // 14), 9)
+    page = zlib.compress(b"q /X1 Do Q\n" * invocations, 9)
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /XObject << /X1 5 0 R >> /Font << /F1 6 0 R >> >> >>",
+        f"<< /Length {len(page)} /Filter /FlateDecode >>\nstream\n".encode() + page + b"\nendstream",
+        f"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> "
+        f"/Length {len(form)} /Filter /FlateDecode >>\nstream\n".encode() + form + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+    ]
+    out, offsets = bytearray(b"%PDF-1.7\n"), []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{1 if bad_startxref else xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+@pytest.fixture
+def form_bomb(tmp_path, monkeypatch):
+    """About 10 s of pypdf work in 1.2 KB, against a 2 s budget."""
+    # raising=False: on code without the budget the tests run, and fail on behaviour.
+    monkeypatch.setattr("recheck.graph.MAX_PDF_SECONDS", 2.0, raising=False)
+    path = tmp_path / "forms.pdf"
+    path.write_bytes(_form_bomb(200_000, 20))
+    assert path.stat().st_size < 2_000
+    return path
+
+
+def test_a_pdf_that_keeps_pypdf_busy_is_stopped_at_the_time_budget(form_bomb):
+    """Before: read to the end (10 s here; 95 s for a 2.7 KB PDF, hours for
+    larger forms) and returned its text."""
+    started = time.monotonic()
+    with pytest.raises(DocumentTooLarge, match="took more than 2 s"):
+        read_document(form_bomb)
+    assert time.monotonic() - started < 6
+
+
+def test_a_pdf_stopped_at_the_time_budget_reaches_the_cli_as_could_not_read(form_bomb, tmp_path):
+    code, out, err = main("audit", form_bomb, "--case", "forms", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "took more than 2 s" in out + err and "Traceback" not in out + err
+
+
+def test_a_pdf_reader_that_dies_is_a_document_that_could_not_be_read(tmp_path, monkeypatch):
+    """A child killed for memory, or crashed, leaves no report: an OSError,
+    which the extract node records as "could not be read"."""
+    monkeypatch.setattr("recheck.extract.pdf_text._BOOTSTRAP", "import sys; sys.exit(3)")
+    path = tmp_path / "letter.pdf"
+    path.write_bytes(_form_bomb(100, 1))
+    with pytest.raises(OSError, match="without a result"):
+        read_document(path)
+    code, out, err = main("audit", path, "--case", "died", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED and "could not be read" in out + err
+
+
+def test_pypdf_warnings_still_reach_this_process_logging(tmp_path, caplog):
+    """Control (passes before and after): the child's warnings are logged
+    here, under the CLI's logging configuration, not printed by the child."""
+    path = tmp_path / "xref.pdf"
+    path.write_bytes(_form_bomb(100, 1, bad_startxref=True))
+    with caplog.at_level("WARNING"):
+        assert read_document(path).strip() == "A"
+    assert any("startxref" in record.getMessage() and record.name.startswith("pypdf") for record in caplog.records)
