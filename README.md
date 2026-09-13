@@ -132,7 +132,7 @@ recheck audit fixtures/letters/07_clinical_terms.txt --case b
 recheck show --case a --brief
 ```
 
-Exit codes: `0` finished · `2` waiting on an answer · `3` no result (unreadable, undetermined, rejected answer). `--fresh` re-audits an existing case.
+Exit codes: `0` finished · `2` waiting on an answer · `3` no result (unreadable, undetermined, rejected answer, a case busy in another process, a malformed command). `--fresh` re-audits an existing case.
 
 ### About `--scripted`
 

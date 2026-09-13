@@ -44,10 +44,14 @@ def run(*args: str, expect: int) -> str:
         [sys.executable, "-m", "recheck.cli", "--store", str(STORE), *args],
         capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(ROOT), timeout=300,
     )
-    output = result.stdout.replace(str(STORE), "runs/demo")
+    def shorten(text: str) -> str:
+        # Printed commands use forward slashes, so the store appears in both spellings.
+        return text.replace(str(STORE), "runs/demo").replace(STORE.as_posix(), "runs/demo")
+
+    output = shorten(result.stdout)
     sys.stdout.write(output)
     if result.stderr.strip():
-        sys.stdout.write(result.stderr.replace(str(STORE), "runs/demo"))
+        sys.stdout.write(shorten(result.stderr))
     print(f"  [exit {result.returncode}]")
     if result.returncode != expect:
         raise SystemExit(f"demo stopped: expected exit {expect}, got {result.returncode}")

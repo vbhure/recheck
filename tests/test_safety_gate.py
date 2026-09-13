@@ -57,7 +57,10 @@ PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
 
 def _gate(tmp_path, status: str) -> bool:
     store = CaseStore(tmp_path / "runs")
-    store.save(Case(case_id="g", source_path="x.txt", status=status))
+    # A "complete" case must carry the figures the engine gives for its facts
+    # (here, none: 0%), or the store refuses it as corrupt.
+    result = dict(recomputed_combined=0, recomputed_degree=0) if status == "complete" else {}
+    store.save(Case(case_id="g", source_path="x.txt", status=status, **result))
     return _safe_to_compute(store, "g")(None)
 
 

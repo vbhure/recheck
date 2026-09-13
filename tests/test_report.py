@@ -120,10 +120,22 @@ def test_a_scripted_run_is_labelled_as_a_replayed_fixture_end_to_end(tmp_path):
     assert case.recomputed_degree == 80
 
 
+def _decision(condition, percent, group, side):
+    return {"condition": condition, "percent": percent, "extremity_group": group, "laterality": side,
+            "group_by": "DETERMINISTIC", "side_by": "DETERMINISTIC" if side != "unknown" else None,
+            "confidence": None, "note": None, "evidence": None}
+
+
 def test_the_triage_warns_about_a_lower_recomputation(tmp_path):
+    # The store refuses a "complete" case whose figures are not what the
+    # engine gives for its decisions, so these cases carry facts that give them.
     store = CaseStore(tmp_path / "runs")
-    store.save(_case(case_id="low", recomputed_degree=60))
-    store.save(_case(case_id="high"))
+    store.save(_case(case_id="low", recomputed_degree=60, recomputed_combined=60, bilateral_applied=False,
+                     decisions=[_decision("Post-traumatic stress disorder", 60, "none", "unknown")]))
+    store.save(_case(case_id="high", alternative_degree=70, decisions=[
+        _decision("Post-traumatic stress disorder", 60, "none", "unknown"),
+        _decision("Right knee strain", 20, "lower", "right"), _decision("Left knee strain", 10, "lower", "left"),
+        _decision("Tinnitus", 10, "none", "unknown")]))
     text = render_triage(store, [Outcome("low", Outcome.COMPLETE), Outcome("high", Outcome.COMPLETE)])
     assert "recomputed LOWER than the letter - raising it could prompt a downward review" in text
     assert "questions to raise in review, not findings of error" in text

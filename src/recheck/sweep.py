@@ -19,7 +19,7 @@ import pathlib
 import sys
 from dataclasses import dataclass
 
-from recheck.case import CaseCorrupt, CaseStore, _WINDOWS_RESERVED
+from recheck.case import RULE_426D_ACTION, Case, CaseBusy, CaseCorrupt, CaseStore, _WINDOWS_RESERVED
 from recheck.provenance import Actor
 
 EXIT_OK = 0
@@ -31,6 +31,9 @@ BAR = "=" * WIDTH
 THIN = "-" * WIDTH
 
 DOCUMENT_SUFFIXES = (".txt", ".pdf")
+
+#: trace action recorded when a reviewer was asked; counts questions asked, open or answered
+QUESTION_ACTION = "Question for a reviewer"
 
 
 @dataclass
@@ -54,12 +57,14 @@ def case_id_for(path: pathlib.Path) -> str:
     """A filesystem-safe case id derived from the document's name.
 
     The store rejects anything that could escape its directory, so the id is
-    sanitised here rather than relying on the document being well named.
+    sanitised here rather than relying on the document being well named. An
+    id may not start with "-": a file named --help.txt became the printed
+    command `resume --case --help`, which fails when pasted.
     """
     stem = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "_" for c in path.stem)
     stem = stem[:64] or "case"
-    if stem.lower() in _WINDOWS_RESERVED:
-        stem = f"case_{stem}"
+    if stem.lower() in _WINDOWS_RESERVED or stem.startswith("-"):
+        stem = f"case_{stem}"[:64]
     return stem
 
 
@@ -69,6 +74,31 @@ def documents_in(directory: pathlib.Path) -> list[pathlib.Path]:
         for path in directory.iterdir()
         if path.is_file() and path.suffix.lower() in DOCUMENT_SUFFIXES
     )
+
+
+#: Short enough for a triage row.
+QUESTION_LOST = "question not in its Strands session; re-audit with --fresh"
+LETTER_CHANGED = "letter changed since it was audited; re-audit with --fresh"
+
+
+def question_is_open(store: CaseStore, case: Case) -> bool:
+    """Does the case's Strands session really hold its question?
+
+    A run killed between writing case.json and writing the session left a
+    case "awaiting_human" with no question in the session. The sweep's
+    status view and `show` still printed NEEDS YOUR ANSWER and a resume
+    command that was always refused. A missing session directory is checked
+    first, because building a graph over it would create an empty session.
+    """
+    from recheck.graph import build_graph, interrupt_id, outstanding_interrupt
+
+    if not store.session_dir(case.case_id).is_dir():
+        return False
+    try:
+        pending = outstanding_interrupt(build_graph(store, case.case_id, case.source_path, None))
+    except Exception:  # noqa: BLE001 - the persisted session is untrusted input
+        return False
+    return pending is not None and pending.id == interrupt_id(case.case_id)
 
 
 def outcome_from_case(store: CaseStore, case_id: str, *, reused: bool = False) -> Outcome:
@@ -83,9 +113,14 @@ def outcome_from_case(store: CaseStore, case_id: str, *, reused: bool = False) -
         "undetermined": Outcome.UNDETERMINED,
     }.get(case.status, Outcome.FAILED)
     detail = ""
-    if state == Outcome.FAILED:
+    if state == Outcome.AWAITING_HUMAN and reused and not question_is_open(store, case):
+        state, detail = Outcome.FAILED, QUESTION_LOST
+    elif state == Outcome.FAILED:
         if case.status == "unparsed":
             detail = case.extraction_failure() or "no assigned evaluations or no combined evaluation statement found"
+        elif case.status == "ready":
+            # A run killed after the answers were accepted but before compute.
+            detail = "answers on file, arithmetic not run; run resume to finish"
         else:
             detail = f"the run stopped with the case in state {case.status!r}"
     return Outcome(case_id, state, detail, reused=reused)
@@ -114,7 +149,15 @@ def sweep(
                               f"{path.name} and {claimed[case_id].name} map to the same case id; rename one")
         else:
             claimed[case_id] = path
-            outcome = _audit_or_reuse(store, case_id, path, factory, run_audit, fresh)
+            try:
+                # A resume or another sweep acting on this case at the same time
+                # corrupted it; the sweep leaves a busy case alone.
+                with store.lock(case_id):
+                    outcome = _audit_or_reuse(store, case_id, path, factory, run_audit, fresh)
+            except CaseBusy as exc:
+                outcome = Outcome(case_id, Outcome.FAILED, str(exc))
+            except OSError as exc:
+                outcome = Outcome(case_id, Outcome.FAILED, f"{type(exc).__name__}: {exc}")
         outcomes.append(outcome)
         if show_progress:
             mark = {Outcome.COMPLETE: ".", Outcome.AWAITING_HUMAN: "?",
@@ -138,8 +181,16 @@ def _audit_or_reuse(store, case_id, path, factory, run_audit, fresh) -> Outcome:
             return Outcome(case_id, Outcome.FAILED,
                            f"case id already used by {pathlib.Path(existing.source_path).name}; rename or use --fresh")
         if fresh or existing is None:
-            store.discard(case_id)
+            try:
+                store.discard(case_id)
+            except OSError as exc:
+                return Outcome(case_id, Outcome.FAILED, f"could not discard the case on file: {exc}")
         else:
+            # The case on file describes the letter as it was audited. If the
+            # letter has changed since, its figures describe a document that
+            # no longer exists; report that rather than the stale result.
+            if existing.letter_changed():
+                return Outcome(case_id, Outcome.FAILED, LETTER_CHANGED, reused=True)
             return outcome_from_case(store, case_id, reused=True)
     return run_audit(store, case_id, path, factory)
 
@@ -160,35 +211,73 @@ def triage_exit_code(outcomes: list[Outcome]) -> int:
     return EXIT_OK
 
 
-def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str = "") -> str:
-    """The triage report. This is what the operator actually reads."""
+def _discrepancy_note(case: Case) -> str:
+    """The note on a triage row: the difference, what 4.26 did, and what it rests on."""
+    delta = (case.recomputed_degree or 0) - (case.stated_combined or 0)
+    if case.has_trace_action(RULE_426D_ACTION):
+        # "4.26 not applied" read as VA having skipped the factor, when the
+        # letter's figure is what the prior rule gives before April 16, 2023.
+        factor = "4.26(d) exception - check decision period"
+    else:
+        factor = "4.26 applied" if case.bilateral_applied else "4.26 not applied"
+    ai = [i for i, d in enumerate(case.load_decisions()) if d.group_by is Actor.AI]
+    uses_ai = "; AI groups " + " ".join(f"[{i}]" for i in ai) if ai else ""
+    return f"({delta:+d}, {factor}{uses_ai})"
+
+
+def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str = "", store_note: str = "") -> str:
+    """The triage report. This is what the operator actually reads.
+
+    Each case is rendered on its own: a case that cannot be read or rendered
+    is listed under COULD NOT PROCEED. A type-confused field in one case.json
+    once raised out of here and the sweep printed no triage at all, for any
+    document.
+    """
     from recheck.graph import accepted_answers
 
     agree, discrepant, awaiting, undetermined, failed = [], [], [], [], []
     groups = {"DETERMINISTIC": 0, "AI": 0, "HUMAN": 0, "unknown": 0}
     sides_from_letter = 0
     immaterial_cases = 0
+    questions_asked = 0
     reused = sum(1 for o in outcomes if o.reused)
 
     for outcome in outcomes:
         if outcome.state == Outcome.FAILED:
-            failed.append((outcome, None))
+            failed.append((outcome, [f"     {outcome.case_id:<12} {outcome.detail[:60]}"]))
             continue
         try:
             case = store.load(outcome.case_id)
-        except (FileNotFoundError, CaseCorrupt) as exc:
-            failed.append((Outcome(outcome.case_id, Outcome.FAILED, f"case unreadable: {exc}"), None))
+            decisions = case.load_decisions()
+            counts = [d.group_by.value if d.group_by else "unknown" for d in decisions]
+            sides = sum(1 for d in decisions if d.side_by is Actor.DETERMINISTIC)
+            if outcome.state == Outcome.AWAITING_HUMAN:
+                bucket = awaiting
+                unknown = [(i, d) for i, d in enumerate(decisions) if d.missing]
+                placeholder = ",".join(f"{i}=<{'|'.join(accepted_answers(d))}>" for i, d in unknown)
+                lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}; "
+                         f"letter states {case.stated_combined}%"]
+                lines += [f"       [{i}] {d.condition[:44]:<44} {' + '.join(d.missing)}?" for i, d in unknown]
+                lines.append(f"       recheck{store_flag} resume --case {outcome.case_id} --answer \"{placeholder}\"")
+            elif outcome.state == Outcome.UNDETERMINED:
+                bucket = undetermined
+                lines = [f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}: "
+                         f"{(case.undetermined_reason or '')[:44]}"]
+            elif case.recomputed_degree == case.stated_combined:
+                bucket, lines = agree, []
+            else:
+                bucket = discrepant
+                lines = [f"       {outcome.case_id:<12} stated {case.stated_combined}%   "
+                         f"recomputed {case.recomputed_degree}%   {_discrepancy_note(case)}"]
+        except Exception as exc:  # noqa: BLE001 - one bad case must not cost the operator the whole triage
+            failed.append((outcome, [f"     {outcome.case_id:<12} {f'case unreadable: {exc}'[:60]}"]))
             continue
-        for d in case.load_decisions():
-            groups[d.group_by.value if d.group_by else "unknown"] += 1
-            if d.side_by is Actor.DETERMINISTIC:
-                sides_from_letter += 1
-        if case.immaterial_unknowns:
-            immaterial_cases += 1
-        bucket = {Outcome.AWAITING_HUMAN: awaiting, Outcome.UNDETERMINED: undetermined}.get(outcome.state)
-        if bucket is None:
-            bucket = agree if case.recomputed_degree == case.stated_combined else discrepant
-        bucket.append((outcome, case))
+        for key in counts:
+            groups[key] += 1
+        sides_from_letter += sides
+        immaterial_cases += bool(case.immaterial_unknowns)
+        questions_asked += case.has_trace_action(QUESTION_ACTION)
+        bucket.append((case, lines))
 
     out: list[str] = [BAR, f"CASELOAD TRIAGE  -  {len(outcomes)} document(s)", BAR, ""]
 
@@ -198,45 +287,39 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
     if discrepant:
         out.append("     questions to raise in review, not findings of error")
     for higher in (True, False):
-        rows = [(o, c) for o, c in discrepant if ((c.recomputed_degree or 0) > (c.stated_combined or 0)) == higher]
+        rows = [(c, lines) for c, lines in discrepant
+                if ((c.recomputed_degree or 0) > (c.stated_combined or 0)) == higher]
         if not rows:
             continue
         out.append("     recomputed HIGHER than the letter" if higher else
                    "     recomputed LOWER than the letter - raising it could prompt a downward review")
-        for outcome, case in rows:
-            delta = (case.recomputed_degree or 0) - (case.stated_combined or 0)
-            factor = "4.26 applied" if case.bilateral_applied else "4.26 not applied"
-            out.append(f"       {outcome.case_id:<12} stated {case.stated_combined}%   "
-                       f"recomputed {case.recomputed_degree}%   ({delta:+d}, {factor})")
+        for _, lines in rows:
+            out += lines
 
     out.append("")
     out.append(_heading("NEEDS YOUR ANSWER", len(awaiting)))
-    for outcome, case in awaiting:
-        decisions = case.load_decisions()
-        unknown = [(i, d) for i, d in enumerate(decisions) if d.missing]
-        out.append(f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}; "
-                   f"letter states {case.stated_combined}%")
-        for i, d in unknown:
-            out.append(f"       [{i}] {d.condition[:44]:<44} {' + '.join(d.missing)}?")
-        placeholder = ",".join(f"{i}=<{'|'.join(accepted_answers(d))}>" for i, d in unknown)
-        out.append(f"       recheck{store_flag} resume --case {outcome.case_id} --answer \"{placeholder}\"")
+    for _, lines in awaiting:
+        out += lines
+    if awaiting and store_note:
+        out.append(f"     {store_note}")
 
     out.append("")
     out.append(_heading("UNDETERMINED - not computed", len(undetermined)))
-    for outcome, case in undetermined:
-        out.append(f"     {outcome.case_id:<12} could be {_or(case.possible_degrees)}: "
-                   f"{(case.undetermined_reason or '')[:44]}")
+    for _, lines in undetermined:
+        out += lines
 
     out.append("")
     out.append(_heading("COULD NOT PROCEED", len(failed)))
-    for outcome, _ in failed:
-        out.append(f"     {outcome.case_id:<12} {outcome.detail[:60]}")
+    for _, lines in failed:
+        out += lines
 
     out += ["", THIN]
     out.append(f"{len(outcomes)} documents: {len(agree)} no discrepancy, {len(discrepant)} to review, "
                f"{len(awaiting)} waiting on an answer, {len(undetermined)} undetermined, "
                f"{len(failed)} could not proceed")
-    out.append(f"questions asked: {len(awaiting)}.  letters with unknown facts that could not change "
+    # Asked, not open: a question answered since still counts. This line
+    # used to print the number still waiting under the label "asked".
+    out.append(f"questions asked: {questions_asked}.  letters with unknown facts that could not change "
                f"the rating, so nobody was asked: {immaterial_cases}")
     out.append(f"extremity groups: {groups['DETERMINISTIC']} lexicon, {groups['AI']} AI, "
                f"{groups['HUMAN']} reviewer, {groups['unknown']} unknown.  sides read from the letters: "

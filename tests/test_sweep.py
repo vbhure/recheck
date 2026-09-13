@@ -340,7 +340,8 @@ def test_a_question_from_a_sweep_is_answered_by_a_separate_process(tmp_path):
     code, out, _ = main("sweep", work, store=store_root)
     assert code == EXIT_AWAITING_HUMAN
     (command,) = [l.strip() for l in out.splitlines() if l.strip().startswith("recheck") and " resume " in l]
-    assert command == f'recheck --store {store_root} resume --case pair --answer "2=<left|right|both|unknown>"'
+    # Printed with forward slashes, which every shell (and Windows) accepts.
+    assert command == f'recheck --store {store_root.as_posix()} resume --case pair --answer "2=<left|right|both|unknown>"'
 
     result = cli("resume", "--case", "pair", "--answer", "2=left", store=store_root)
     assert result.returncode == EXIT_OK, result.stdout + result.stderr
