@@ -148,7 +148,7 @@ def test_the_printed_command_survives_a_store_path_with_spaces(tmp_path, letter)
     (line,) = [l.strip() for l in out.splitlines() if l.strip().startswith("recheck") and " resume " in l]
     match = re.fullmatch(r'recheck --store "([^"]+)" resume --case (\S+) --answer "([^"]+)"', line)
     assert match, line
-    assert match.group(1) == str(store)
+    assert match.group(1) == store.as_posix()  # forward slashes paste into any shell
 
     result = cli("resume", "--case", match.group(2), "--answer", "2=left", store=match.group(1))
     assert result.returncode == EXIT_OK, result.stdout + result.stderr

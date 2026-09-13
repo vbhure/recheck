@@ -19,7 +19,7 @@ from __future__ import annotations
 import pathlib
 from collections import Counter
 
-from recheck.case import Case
+from recheck.case import RULE_426D_ACTION, Case
 from recheck.provenance import Actor, wrap
 
 RULE = "=" * 74
@@ -41,9 +41,21 @@ def _or(values) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
 
 
-def verdict(case: Case) -> tuple[str, str]:
-    """Return (headline, explanation). Never asserts the VA erred."""
+def verdict(case: Case, *, question_open: bool = True) -> tuple[str, str]:
+    """Return (headline, explanation). Never asserts the VA erred.
+
+    `question_open` is False for a case whose status says it awaits an answer
+    but whose Strands session holds no question an answer could reach; it is
+    not presented as awaiting one.
+    """
     stated = f"{case.stated_combined}%" if case.stated_combined is not None else "no value"
+    if case.status == "awaiting_human" and not question_open:
+        return (
+            "QUESTION NO LONGER OPEN - NO RECOMPUTATION",
+            f"The letter states {stated}. This case was waiting on an answer, but its question is no "
+            f"longer open in the Strands session, so no answer can be accepted. Nothing was recomputed; "
+            f"audit the letter again with --fresh.",
+        )
     if case.status == "awaiting_human":
         return (
             "AWAITING YOUR ANSWER",
@@ -52,18 +64,42 @@ def verdict(case: Case) -> tuple[str, str]:
             f"this case.",
         )
     if case.status == "undetermined":
+        reason = case.undetermined_reason or "the facts needed are not established"
+        if case.possible_degrees:
+            could = f"The rating could be {_or(case.possible_degrees)}; the letter states {stated}."
+        else:
+            # Over the enumeration limit there are no possible degrees, and
+            # this read "The rating could be not established".
+            could = (f"The possible ratings could not be enumerated: too many facts are unknown. "
+                     f"The letter states {stated}.")
         return (
             "UNDETERMINED - NOT COMPUTED",
-            f"{(case.undetermined_reason or 'the facts needed are not established').capitalize()}. "
-            f"The rating could be {_or(case.possible_degrees)}; the letter states {stated}. "
-            f"Recheck does not pick one.",
+            # Only the first letter is raised: capitalize() lowercased the rest.
+            f"{reason[:1].upper() + reason[1:]}. {could} Recheck does not pick one.",
         )
     if case.status == "unparsed":
         reason = case.extraction_failure() or "no assigned evaluations or no combined evaluation statement were found"
-        return ("COULD NOT READ THE LETTER", reason[:1].upper() + reason[1:].rstrip(".") + ".")
-    if case.recomputed_degree is None:
-        return ("INCOMPLETE - NO RECOMPUTATION",
-                "Recheck could not establish enough facts to recompute this evaluation.")
+        # Capitalising the first letter turned "scanned.pdf has no extractable
+        # text layer" into "Scanned.pdf ...", a different file on a
+        # case-sensitive filesystem. A reason that starts with the file name
+        # keeps it exactly as on disk.
+        if not reason.startswith(pathlib.Path(case.source_path).name):
+            reason = reason[:1].upper() + reason[1:]
+        return ("COULD NOT READ THE LETTER", reason.rstrip(".") + ".")
+    if case.status == "ready":
+        return ("RUN DID NOT FINISH - NO RECOMPUTATION",
+                "The facts Recheck needs are established"
+                + (" and your answers are on file" if case.human_answers else "")
+                + ", but the run stopped before the arithmetic. Run resume for this case, without "
+                  "an answer, to finish it.")
+    if case.status != "complete" or case.recomputed_degree is None:
+        # Only the compute node produces a figure, and only a "complete" case
+        # has one. A run that stopped (a filesystem error, a kill) was
+        # reported as "could not establish enough facts", a cause nobody
+        # determined.
+        return ("RUN DID NOT FINISH - NO RECOMPUTATION",
+                f"The run stopped with the case in state {case.status!r}, before a result was reached. "
+                f"Nothing was recomputed; audit the letter again with --fresh.")
     if case.stated_combined is None:
         return ("NO STATED VALUE TO COMPARE",
                 f"Recheck computes {case.recomputed_degree}% but the letter did not state a "
@@ -72,11 +108,25 @@ def verdict(case: Case) -> tuple[str, str]:
     basis = "the evaluations as printed"
     if case.human_answers:
         basis += " and the facts you supplied for " + ", ".join(f"[{i}]" for i in case.human_answers)
+    # A result that rests on a model's (or a replayed fixture's) extremity
+    # group says so, as it does for the reviewer's facts. It used to read as
+    # pure arithmetic on "the evaluations as printed".
+    ai = [i for i, d in enumerate(case.load_decisions()) if d.group_by is Actor.AI]
+    if ai:
+        source = "replayed from a fixture" if (case.classifier or "").startswith("scripted") else "from a live model"
+        basis += (" and the AI classification of " + ", ".join(f"[{i}]" for i in ai)
+                  + f" ({source})")
+    caveat = ""
+    if case.has_trace_action(RULE_426D_ACTION):
+        prior = (f"; for a decision period before that date the prior rule gives {case.alternative_degree}%"
+                 if case.alternative_degree is not None else "")
+        caveat = (f" This result depends on the 38 CFR 4.26(d) exception, in force from April 16, 2023"
+                  f"{prior}. Check the period the decision covers.")
     if case.recomputed_degree == case.stated_combined:
         return (
             "NO DISCREPANCY FOUND",
             f"Applying 38 CFR 4.25 and 4.26 to {basis} gives {case.recomputed_degree}%, the same "
-            f"as the {stated} the letter states.",
+            f"as the {stated} the letter states.{caveat}",
         )
     higher = case.recomputed_degree > case.stated_combined
     caution = (
@@ -87,7 +137,7 @@ def verdict(case: Case) -> tuple[str, str]:
     return (
         "POTENTIAL DISCREPANCY - HUMAN REVIEW RECOMMENDED",
         f"The letter states {stated}. Applying 38 CFR 4.25 and 4.26 to {basis} gives "
-        f"{case.recomputed_degree}%, which is {'higher' if higher else 'lower'}. Check it against "
+        f"{case.recomputed_degree}%, which is {'higher' if higher else 'lower'}.{caveat} Check it against "
         f"the rating code sheet and claims file: this is a question to raise in review, not a "
         f"finding of error, and the difference may rest on facts or judgments Recheck cannot "
         f"see.{caution}",
@@ -133,10 +183,15 @@ def ownership_line(case: Case) -> str:
     )
 
 
-def render(case: Case, *, show_trace: bool = True) -> str:
+def render(case: Case, *, show_trace: bool = True, notice: str | None = None, question_open: bool = True) -> str:
+    """The report. `notice` is a warning printed under the header, for a case
+    whose report cannot be taken as it stands (its letter changed, its
+    question was lost); `question_open` is passed to verdict()."""
     out: list[str] = [RULE, "RECHECK - combined rating verification",
                       f"case {case.case_id}   letter: {pathlib.Path(case.source_path).name}",
                       classifier_note(case), RULE]
+    if notice:
+        out += wrap(notice, 72) + [RULE]
 
     # A scripted run replays committed answers; every place an AI decision is
     # shown says so, or a demo on the zero-model path reads as a model run.
@@ -174,10 +229,12 @@ def render(case: Case, *, show_trace: bool = True) -> str:
         if case.immaterial_unknowns:
             listed = ", ".join(f"[{i}]" for i in case.immaterial_unknowns)
             out.append(f"  unknown facts for {listed} could not change this result, so nobody was asked")
+    elif case.status == "undetermined" and not case.possible_degrees:
+        out.append(row("possible final degrees", "not enumerated: too many unknown facts"))
     else:
         out.append(row("possible final degrees", _or(case.possible_degrees)))
 
-    headline, explanation = verdict(case)
+    headline, explanation = verdict(case, question_open=question_open)
     out += ["", RULE, headline, RULE] + wrap(explanation, 72)
     out += ["", *wrap(ownership_line(case), 72)]
     timeline = timeline_line(case)
