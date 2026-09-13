@@ -143,6 +143,75 @@ def test_the_graph_phrase_helper_survives_an_empty_set():
 
 
 # --------------------------------------------------------------------------
+# Round 2 (review of MODEL-RT-P2P6-03): more arm and leg ratings than the
+# 4.26(d) search is verified for
+# --------------------------------------------------------------------------
+
+SIDED_ELEVEN = [("Left knee strain", 10), ("Right knee strain", 10), ("Left ankle strain", 10),
+                ("Right ankle strain", 10), ("Left hip strain", 10), ("Right hip strain", 10),
+                ("Left shoulder strain", 10), ("Right shoulder strain", 10), ("Left elbow strain", 10),
+                ("Right elbow strain", 10), ("Left wrist strain", 10)]
+OVER_MEMBERS = {
+    "thirteen_sided": SIDED_ELEVEN + [("Right wrist strain", 10), ("Left thumb strain", 10)],
+    "eleven_sided_two_sideless": SIDED_ELEVEN + [("Knee strain", 10), ("Ankle strain", 10)],
+}
+
+
+@pytest.mark.parametrize("name", sorted(OVER_MEMBERS))
+def test_more_arm_and_leg_ratings_than_the_search_is_verified_for_are_undetermined(tmp_path, name):
+    """The engine refuses more than MAX_BILATERAL_MEMBERS members in the factor
+    rather than truncating 4.26(d). That ValueError escaped the assess node:
+    the case stayed 'classified', the report said INCOMPLETE, exit 3 - the
+    dead state MODEL-RT-P2P6-03 was about, by another route."""
+    assert len(OVER_MEMBERS[name]) == rating.MAX_BILATERAL_MEMBERS + 1
+    letter = tabular_letter(tmp_path / f"{name}.txt", OVER_MEMBERS[name], stated=90)
+    store_root = tmp_path / "runs"
+    code, out, err = main("audit", letter, "--case", name, store=store_root)
+    assert "ValueError" not in out + err
+    assert code == EXIT_CANNOT_PROCEED
+    assert "UNDETERMINED - NOT COMPUTED" in out
+    case = _case(store_root, name)
+    assert case.status == "undetermined"
+    assert case.recomputed_degree is None and case.possible_degrees == []
+    assert "verified for" in case.undetermined_reason
+    assert "compute" not in nodes_run(CaseStore(store_root), name)
+    assert main("show", "--case", name, store=store_root)[0] == EXIT_OK
+
+
+def test_the_member_limit_is_refused_before_any_arithmetic(monkeypatch):
+    """Found from the planned engine inputs, like the work budget - whether
+    the letter states every side or leaves some to the enumeration."""
+    calls = _count_engine_folds(monkeypatch, limit=0)
+    thirteen = [D(10, g, s) for g, s in [("lower", "left"), ("lower", "right")] * 4
+                + [("upper", "left"), ("upper", "right")] * 2 + [("upper", "left")]]
+    eleven_and_two = thirteen[:11] + [D(10, "lower", "unknown"), D(10, "lower", "unknown")]
+    for decisions in (thirteen, eleven_and_two):
+        m = assess(decisions)
+        assert not m.exhaustive and not m.settled and m.possible == ()
+        assert "13 arm and leg disabilities" in m.limit
+    assert calls[0] == 0
+
+
+def test_the_compute_node_refuses_a_ready_case_over_the_member_limit(tmp_path):
+    """Defence in depth: a case marked ready (a hand-edited case file) with
+    13 arm and leg ratings raised ValueError inside compute. It now gets no
+    figure and a terminal state."""
+    import asyncio
+
+    store = CaseStore(tmp_path / "runs")
+    case = graph.open_case(store, "ready13", str(tmp_path / "none.txt"))
+    case.store_decisions([D(10, g, s) for g, s in [("lower", "left"), ("lower", "right")] * 4
+                          + [("upper", "left"), ("upper", "right")] * 2 + [("upper", "left")]])
+    case.status = "ready"
+    store.save(case)
+    asyncio.run(graph.ComputeNode(store, "ready13").invoke_async("compute"))
+    after = store.load("ready13")
+    assert after.status == "undetermined"
+    assert after.recomputed_degree is None and after.possible_degrees == []
+    assert "verified for" in after.undetermined_reason
+
+
+# --------------------------------------------------------------------------
 # ARITH-F4: a both-sides evaluation left alone in the factor by 4.26(d)
 # --------------------------------------------------------------------------
 

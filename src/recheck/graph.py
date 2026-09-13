@@ -291,26 +291,22 @@ class AssessNode(MultiAgentBase):
         unknown = [(i, decisions[i]) for i in m.unknown]
         both = [d for d in decisions if d.laterality == "both" and d.extremity_group != "none"]
 
+        if not m.exhaustive:
+            # Too many possibilities to try them all, or more arm and leg
+            # ratings than the 4.26(d) search is verified for - so there are
+            # no possible degrees. The branches below were reached with that
+            # empty set and phrasing it raised IndexError inside this node,
+            # leaving the case stuck in 'classified'. Not sampled, and not
+            # asked blind - nobody can say which answers would matter, or what
+            # they would lead to. This comes before the every-fact-established
+            # branch: thirteen arm and leg ratings with every side stated went
+            # on to compute, where the engine's refusal raised instead.
+            return _record_unenumerated(self.store, case, trace, m)
+
         if not unknown and not both:
             trace.add(Actor.DETERMINISTIC, "Assessment",
                       "every fact 4.25 and 4.26 need is established", value="ready to compute")
             return self._ready(case, trace)
-
-        if not m.exhaustive:
-            # Too many possibilities to try them all, so there are no possible
-            # degrees. The branches below were reached with that empty set and
-            # phrasing it raised IndexError inside this node, leaving the case
-            # stuck in 'classified'. Not sampled, and not asked blind - nobody
-            # can say which answers would matter, or what they would lead to.
-            reason = f"too many facts are unknown to try every possibility ({m.limit})"
-            trace.add(Actor.DETERMINISTIC, "Result UNDETERMINED",
-                      f"{reason}. Recheck does not sample a subset of them.", value="not computed")
-            case.status = "undetermined"
-            case.undetermined_reason = reason
-            case.possible_degrees = []
-            case.store_trace(trace)
-            self.store.save(case)
-            return _done()
 
         if m.settled:
             listed = "; ".join(f"[{i}] {d.condition}: {' and '.join(d.missing)}" for i, d in unknown)
@@ -422,6 +418,13 @@ class ComputeNode(MultiAgentBase):
             self.store.save(case)
             return _done(Status.FAILED)
         decisions = case.load_decisions()
+        m = assess_materiality(decisions)
+        if not m.exhaustive:
+            # Assess never marks such a case ready, but this node checks for
+            # itself (see above): a hand-edited 'ready' case with thirteen arm
+            # and leg ratings raised the engine's ValueError here instead of
+            # ending without a figure.
+            return _record_unenumerated(self.store, case, trace, m)
         evaluation, assumed = evaluate_for_report(decisions)
         for index, (group, side) in sorted(assumed.items()):
             if group not in ("upper", "lower"):
@@ -482,6 +485,24 @@ class ComputeNode(MultiAgentBase):
         case.store_trace(trace)
         self.store.save(case)
         return _done()
+
+
+def _record_unenumerated(store: CaseStore, case: Case, trace: Trace, m: Materiality) -> MultiAgentResult:
+    """End a case whose possibilities could not all be evaluated: UNDETERMINED, no figure.
+
+    Shared by assess and compute so that both reach the same terminal state
+    with the same reason. m.limit is a whole reason (materiality.assess
+    writes it for the case file and the report).
+    """
+    trace.add(Actor.DETERMINISTIC, "Result UNDETERMINED",
+              f"{m.limit}. Recheck neither samples the possibilities nor truncates the 4.26(d) search.",
+              value="not computed")
+    case.status = "undetermined"
+    case.undetermined_reason = m.limit
+    case.possible_degrees = []
+    case.store_trace(trace)
+    store.save(case)
+    return _done()
 
 
 # ---------------------------------------------------------------------------

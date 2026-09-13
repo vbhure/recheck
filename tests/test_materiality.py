@@ -134,7 +134,11 @@ def test_a_single_both_sides_evaluation_whose_reading_does_not_matter():
 
 
 def test_enumeration_that_would_be_sampled_is_refused_instead():
-    """Exhaustive or not used: too many unknowns means asking, not sampling."""
+    """Exhaustive or not used: too many unknowns means UNDETERMINED, not sampling.
+
+    No possible degrees are reported and nobody is asked (see
+    tests/test_rt_graph.py::test_a_letter_over_the_cap_is_undetermined_not_an_exception);
+    answers_matter stays true because unknown facts remain."""
     decisions = [D(10, "unknown", "unknown") for _ in range(6)]
     assert 5 ** 6 > MAX_COMPLETIONS
     m = assess(decisions)

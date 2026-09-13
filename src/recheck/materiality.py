@@ -47,7 +47,14 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
-from recheck.cfr.rating import COMPENSABLE_MINIMUM, Evaluation, Paired, bilateral_group, evaluate
+from recheck.cfr.rating import (
+    COMPENSABLE_MINIMUM,
+    MAX_BILATERAL_MEMBERS,
+    Evaluation,
+    Paired,
+    bilateral_group,
+    evaluate,
+)
 from recheck.classify import Decision
 
 # Enumeration is exhaustive or it is not used. A letter with so many unknowns
@@ -69,9 +76,14 @@ MAX_COMPLETIONS = 4096
 # grows with the subsets visited - budgeted here, summed over DISTINCT
 # evaluations (completions that produce the same facts are evaluated once).
 # A count, not a clock, so the same letter gets the same answer on every
-# machine. 2^20 subsets is a few seconds; that 12-rating letter needs about
-# 750,000 and completes. Past the budget the result is UNDETERMINED, never
-# sampled.
+# machine. That 12-rating letter needs about 750,000 subsets and completes in
+# about 3.5 seconds. The budget does not make every letter under it that
+# quick: the slowest one found (a 50% rating, eight sided arm and leg ratings
+# of mixed percentages, three terms outside the lexicon: 938,240 subsets)
+# took 6 to 10.5 seconds for one assess() on the development machines, and
+# 12.7 seconds for the whole audit. That is the cost to expect at the
+# budget. Letters over it were refused in under 0.4 seconds. Past the budget
+# the result is UNDETERMINED, never sampled.
 MAX_SEARCH_WORK = 1 << 20
 
 GROUPS = ("upper", "lower")
@@ -242,7 +254,8 @@ class Materiality:
     exhaustive: bool
     #: engine evaluations the enumeration stands for: completions times readings
     combinations: int = 0
-    #: why the enumeration is not exhaustive, when it is not
+    #: why the enumeration is not exhaustive, when it is not - a whole reason,
+    #: in lower case, fit to be the case's undetermined_reason
     limit: str | None = None
 
     @property
@@ -282,8 +295,8 @@ def assess(decisions: Sequence[Decision]) -> Materiality:
     if completions > MAX_COMPLETIONS:
         return Materiality(
             possible=(), by_answers=(), unknown=unknown, exhaustive=False,
-            limit=(f"the unknown facts can be completed {completions} ways, over the limit of "
-                   f"{MAX_COMPLETIONS}"),
+            limit=(f"too many facts are unknown to try every possibility (the unknown facts can be "
+                   f"completed {completions} ways, over the limit of {MAX_COMPLETIONS})"),
         )
 
     # First every completion's engine inputs, and what running them would
@@ -308,15 +321,27 @@ def assess(decisions: Sequence[Decision]) -> Materiality:
             key = (tuple(sorted((p.percent, p.extremity, p.side) for p in paired)), reading)
             if key not in seen:
                 seen.add(key)
-                work += 2 ** len(bilateral_group(paired, lone_both_in_factor=reading))
+                members = len(bilateral_group(paired, lone_both_in_factor=reading))
+                if members > MAX_BILATERAL_MEMBERS:
+                    # The engine refuses this rather than truncate 4.26(d),
+                    # and its ValueError escaped the assess node, leaving the
+                    # case stuck in 'classified'. One completion the engine
+                    # will not evaluate means the possible degrees are not
+                    # known, so none are reported - as over the cap.
+                    return Materiality(
+                        possible=(), by_answers=(), unknown=unknown, exhaustive=False,
+                        limit=(f"{members} arm and leg disabilities would enter the bilateral factor, "
+                               f"more than the {MAX_BILATERAL_MEMBERS} its 4.26(d) search is verified for"),
+                    )
+                work += 2 ** members
             keys.append(key)
         runs += len(keys)
         planned.append((tuple(answers), keys))
     if work > MAX_SEARCH_WORK:
         return Materiality(
             possible=(), by_answers=(), unknown=unknown, exhaustive=False,
-            limit=(f"trying every completion of the unknown facts needs {work} 4.26(d) combinations, "
-                   f"over the limit of {MAX_SEARCH_WORK}"),
+            limit=(f"too many facts are unknown to try every possibility (trying every completion of "
+                   f"the unknown facts needs {work} 4.26(d) combinations, over the limit of {MAX_SEARCH_WORK})"),
         )
 
     ratings = tuple(sorted(d.percent for d in decisions))
