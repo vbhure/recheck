@@ -41,6 +41,7 @@ holds the domain facts. There is no second hand-written copy of graph state.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 from typing import Any, Sequence
@@ -53,6 +54,7 @@ from strands.session.file_session_manager import FileSessionManager
 
 from recheck.case import Case, CaseStore
 from recheck.classify import AgentFactory, Decision, classify_async
+from recheck.extract import pdf_text
 from recheck.extract.deterministic import ExtractedRating, parse
 from recheck.materiality import Materiality, assess as assess_materiality, evaluate_for_report
 from recheck.provenance import Actor, Trace
@@ -65,6 +67,22 @@ NODE_ORDER = ("extract", "classify", "assess", "compute")
 # bomb whose page count explodes on parse.
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_PDF_PAGES = 100
+# Bytes and pages do not bound the work. A 68 KB one-page PDF whose content
+# stream inflates to 70 MB passed both caps, then pypdf and the parser grew
+# to 5-6 GB over more than ten minutes. So the text a document may yield is
+# capped (a hundred dense pages), and so is what any one PDF stream may
+# inflate to - pypdf's own default is 75 MB per stream, far beyond a letter -
+# and what all page content streams together may inflate to: pypdf spends
+# about 3 s per MB parsing page content whether or not it draws any text, so
+# a hundred pages each just under the per-stream cap ran for over 5 minutes.
+MAX_DOCUMENT_CHARS = 500_000
+MAX_PDF_STREAM_BYTES = 2_000_000
+MAX_PDF_CONTENT_BYTES = 4_000_000
+# And none of these bounds the time pypdf spends on a Form XObject invoked
+# again and again: a 2.7 KB PDF took 95 s. PDF text is extracted in a child
+# process that is killed at this budget. A real letter reads in well under a
+# second, child start-up included.
+MAX_PDF_SECONDS = 20.0
 
 
 def interrupt_id(case_id: str) -> str:
@@ -86,24 +104,56 @@ def read_document(path: str | pathlib.Path) -> str:
     one by name is better than dying of memory exhaustion halfway through.
     """
     p = pathlib.Path(path)
+    return _document_text(p, _document_bytes(p))
+
+
+def _too_large(name: str, size: int) -> DocumentTooLarge:
+    return DocumentTooLarge(
+        f"{name} is {size / 1024 / 1024:.1f} MB, over the "
+        f"{MAX_DOCUMENT_BYTES / 1024 / 1024:.0f} MB limit. A rating decision is a "
+        f"few pages; refusing rather than loading it."
+    )
+
+
+def _document_bytes(p: pathlib.Path) -> bytes:
+    """The document's bytes, read once and never more than the cap.
+
+    Text is decoded from these same bytes, and the case records their digest,
+    so the digest describes exactly what was parsed - not a second read of a
+    file that may have changed in between.
+    """
     size = p.stat().st_size  # raises FileNotFoundError for a missing path
     if size > MAX_DOCUMENT_BYTES:
-        raise DocumentTooLarge(
-            f"{p.name} is {size / 1024 / 1024:.1f} MB, over the "
-            f"{MAX_DOCUMENT_BYTES / 1024 / 1024:.0f} MB limit. A rating decision is a "
-            f"few pages; refusing rather than loading it."
-        )
+        raise _too_large(p.name, size)
+    with p.open("rb") as handle:
+        data = handle.read(MAX_DOCUMENT_BYTES + 1)  # the file may have grown since stat()
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise _too_large(p.name, len(data))
+    return data
 
+
+def _document_text(p: pathlib.Path, data: bytes) -> str:
+    too_long = (f"{p.name} yields more than {MAX_DOCUMENT_CHARS:,} characters of text. A rating "
+                f"decision is a few pages; refusing rather than parsing it.")
     if p.suffix.lower() == ".pdf":
-        from pypdf import PdfReader
-
-        reader = PdfReader(str(p))
-        page_count = len(reader.pages)
-        if page_count > MAX_PDF_PAGES:
+        # pypdf runs in a child process with a wall-clock budget; see
+        # recheck.extract.pdf_text for why no cap alone could bound it.
+        limits = pdf_text.Limits(max_pages=MAX_PDF_PAGES, max_chars=MAX_DOCUMENT_CHARS,
+                                 max_stream_bytes=MAX_PDF_STREAM_BYTES, max_content_bytes=MAX_PDF_CONTENT_BYTES)
+        outcome = pdf_text.extract(data, p.name, limits, MAX_PDF_SECONDS)
+        if outcome.kind == "timeout":
             raise DocumentTooLarge(
-                f"{p.name} has {page_count} pages, over the {MAX_PDF_PAGES}-page limit."
+                f"{p.name} took more than {MAX_PDF_SECONDS:g} s to read. A rating decision is a few pages; "
+                f"refusing rather than continuing to parse it."
             )
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        if outcome.kind == "died":
+            # An OSError, so the extract node records "could not be read".
+            raise ChildProcessError(f"the PDF reader stopped without a result ({outcome.value})")
+        if outcome.kind == "error":
+            raise outcome.value  # type: ignore[misc] - what pypdf raised, as in-process
+        if outcome.kind == "too_large":
+            raise DocumentTooLarge(str(outcome.value))
+        text = str(outcome.value)
         if not text.strip():
             raise ScannedDocument(
                 f"{p.name} has no extractable text layer. This document requires OCR, "
@@ -111,7 +161,11 @@ def read_document(path: str | pathlib.Path) -> str:
                 f"or a .txt transcript."
             )
         return text
-    return p.read_text(encoding="utf-8")
+    # Universal newlines, as Path.read_text gives: a bare CR is a line break.
+    text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    if len(text) > MAX_DOCUMENT_CHARS:
+        raise DocumentTooLarge(too_long)
+    return text
 
 
 def _done(status: Status = Status.COMPLETED) -> MultiAgentResult:
@@ -143,18 +197,25 @@ class ExtractNode(MultiAgentBase):
         # letter", so it is left to surface.
         from pypdf.errors import PyPdfError
 
+        path = pathlib.Path(self.source)
+        data: bytes | None = None
         try:
-            text = read_document(self.source)
+            data = _document_bytes(path)
+            text = _document_text(path, data)
         except (ScannedDocument, DocumentTooLarge) as exc:
             text, reason = None, str(exc)
         except (OSError, UnicodeDecodeError, PyPdfError) as exc:
-            text, reason = None, f"{pathlib.Path(self.source).name} could not be read ({type(exc).__name__}: {exc})"
+            text, reason = None, f"{path.name} could not be read ({type(exc).__name__}: {exc})"
         extraction = parse(text) if text is not None else None
         if extraction is not None:
             reason = extraction.unparsed_reason or "no ratings found"
         # The caller opens the case (recording the classifier); extraction
         # starts its facts and trace afresh.
         case = self.store.load(self.case_id)
+        # The digest of the bytes this case was read from - including a
+        # letter that was refused - so resume, show and sweep can tell when
+        # the letter on disk is no longer the one the case describes.
+        case.document_sha256 = hashlib.sha256(data).hexdigest() if data is not None else None
         trace = Trace()
         if extraction is None or not extraction.ok:
             trace.add(Actor.DETERMINISTIC, "Extraction FAILED", reason, value="cannot proceed")

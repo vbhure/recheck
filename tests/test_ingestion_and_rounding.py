@@ -127,13 +127,14 @@ def test_a_side_in_an_adjacent_sentence_does_not_leak():
 
 
 def test_x_ray_evidence_inside_a_tabular_row_does_not_truncate():
-    """E1, tabular form."""
+    """E1, tabular form. (A rating-shaped ROW under the heading is refused
+    instead - it may be a row the heading cut; see test_rt_extraction.py.)"""
     letter = (
         "RATING DECISION\n"
         "  1. Right knee strain with x-ray evidence of arthritis (DC 5003) ...... 10%\n"
         "  2. Left knee strain (DC 5260) ........................................ 10%\n"
         "  3. Tinnitus (DC 6260) ................................................ 10%\n"
-        "\nEVIDENCE\n  4. Not a rating ....... 90%\n"
+        "\nEVIDENCE\n  A 90% evaluation requires ankylosis.\n"
         "\nCOMBINED EVALUATION FOR COMPENSATION: 30%\n"
     )
     assert [r.percent for r in parse(letter).ratings] == [10, 10, 10]
