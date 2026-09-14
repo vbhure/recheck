@@ -4,6 +4,8 @@
 
 Built with the [Strands Agents SDK](https://strandsagents.com) for the AWS *Agents for Humans* hackathon · Track: **Professional Agents** · Demo video: *link added at submission* · MIT licensed
 
+**Try it in a few minutes — no model, no API key, no network:** `pip install -e ".[dev]"`, then `python tools/demo.py` ([Quick start](#quick-start)). It sweeps 24 synthetic letters (21 finish, 3 wait on a question) and answers one of the questions from a new process.
+
 ![Recheck architecture](docs/architecture.svg)
 
 ---
@@ -36,7 +38,7 @@ recheck sweep <folder of decision letters>
 For each letter, unattended:
 
 1. **Reads the evaluations** — percentages, the stated combined rating, and the line each came from. *(deterministic)*
-2. **Works out which disabilities are of an arm or a leg.** The rating schedule's own anatomy (knee, sciatic nerve, humerus, pes planus…) is recognised by a deterministic lexicon. Clinical and eponymous names outside that vocabulary ("cubital tunnel syndrome", "De Quervain's tenosynovitis") go to a model in at most **one** structured call per letter. *(AI only for the gap)*
+2. **Works out which disabilities are of an arm or a leg.** The rating schedule's own anatomy (knee, sciatic nerve, humerus, pes planus…) is recognised by a deterministic lexicon. Clinical and eponymous names outside that vocabulary ("cubital tunnel syndrome", "De Quervain's tenosynovitis") go to a model in at most **one** structured call per letter. *(AI only for the gap)* In this repository those answers are replayed from committed fixtures; no live model has been run (see `--scripted` below).
 3. **Reads which side each is on** from the letter's own words. The model is never asked. *(deterministic)*
 4. **Decides whether anything unknown matters.** If the letter omits a fact, Recheck runs every possible answer through the rating engine. If they all give the same rating, nobody is asked. If there are too many possibilities to try them all, the letter is UNDETERMINED rather than guessed. *(deterministic)*
 5. **Asks a person only when an answer would change the rating** — a side or an extremity group, never a number — and shows the ratings the answers lead to. The question is persisted and the process exits; the representative answers later, from any process. *(human)*
@@ -90,6 +92,8 @@ Rating calculators exist. What a representative lacks is something that works th
 - **The model is confined to one judgment**, and nothing it says is used unchecked.
 
 ## Who decides what
+
+Code owns every number, every side and all arithmetic. AI owns one judgment: whether an unfamiliar condition name is an arm or a leg, and that answer is checked before it is used. A person is asked only for a side or an extremity group, and only when the answer changes the final rating.
 
 | Fact or step | Decided by | Guard |
 |---|---|---|
