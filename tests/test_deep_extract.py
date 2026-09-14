@@ -352,6 +352,10 @@ def test_a_noncompensable_stage_and_a_later_increase_are_refused_as_a_repeat():
         ("Scar, abdomen, onset after right knee injury", "unrecognised", "unknown"),
         ("Hypertension (onset after right knee surgery)", "unrecognised", "unknown"),
         ("Hemorrhoids, onset since left ankle fracture", "unrecognised", "unknown"),
+        # still a right leg disability on 6b317f7
+        ("Scar, abdomen, incurred during right knee surgery", "unrecognised", "unknown"),
+        ("Hypertension, while treated for right knee injury", "unrecognised", "unknown"),
+        ("Left hip strain, incurred during parachute jump", "lower", "left"),  # control
         # the cost, accepted: read correctly on 12705f8, now left to materiality or a question
         ("Scar from shell fragment wound, right thigh", "unrecognised", "unknown"),
         # controls: the same facts before the word, or no such word

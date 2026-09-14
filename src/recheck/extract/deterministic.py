@@ -187,7 +187,9 @@ def primary_clause(condition: str) -> str:
 # thigh - but a fact that only the text after one supplies is not taken from
 # the name: read whole, that scar was a right leg disability and entered the
 # 4.26 factor. See _classify_extremity and recheck.classify.derive_laterality.
-_OPEN_LINK = re.compile(r"\b(?:by|after|since|subsequent to|from)\b", re.I)
+# "during" and "while" too: "Scar, abdomen, incurred during right knee surgery"
+# was still a right leg disability.
+_OPEN_LINK = re.compile(r"\b(?:by|after|since|subsequent to|from|during|while)\b", re.I)
 
 
 def before_open_link(primary: str) -> str | None:
