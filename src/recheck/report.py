@@ -120,8 +120,13 @@ def verdict(case: Case, *, question_open: bool = True) -> tuple[str, str]:
                   + f" ({source})")
     caveat = ""
     if case.has_trace_action(RULE_426D_ACTION):
+        # With an unknown fact the arithmetic assumes, the prior rule's figure
+        # is for that assumption: the facts can settle the result under
+        # 4.26(d) and still leave the prior rule's figure open.
+        assumption = (" with the fact the arithmetic assumes"
+                      if case.has_trace_action("Arithmetic shown with an assumed fact") else "")
         prior = (f"; for a decision period before that date the prior rule gives {case.alternative_degree}%"
-                 if case.alternative_degree is not None else "")
+                 f"{assumption}" if case.alternative_degree is not None else "")
         caveat = (f" This result depends on the 38 CFR 4.26(d) exception, in force from April 16, 2023"
                   f"{prior}. Check the period the decision covers.")
     if case.recomputed_degree == case.stated_combined:
