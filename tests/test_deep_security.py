@@ -7,6 +7,13 @@
          COMPENSATION" is followed by blank lines, or a row "1." followed by
          80,000 spaces, held one audit - and so a whole sweep - for minutes;
          the 500,000-character cap allows hours.
+  SEC-2  A case.json JSON cannot decode (nesting past the recursion limit, bytes
+         that are not UTF-8, a number over the int conversion limit) escaped
+         CaseStore.load as RecursionError or ValueError: a traceback from show
+         and resume, and a case sweep --fresh could never re-audit.
+  SEC-3  Terminal control characters from a letter or a hand-edited case.json
+         were printed as they stood, so a condition name could erase report
+         lines, conceal everything after it, or write the clipboard (OSC 52).
 """
 
 from __future__ import annotations
@@ -116,3 +123,65 @@ def test_sweep_fresh_re_audits_an_undecodable_case_file(tmp_path, kind):
     code, out, err = main("sweep", letters, "--fresh", store=store)
     assert code == EXIT_AWAITING_HUMAN, out + err
     assert "NEEDS YOUR ANSWER" in out
+
+
+# --------------------------------------------------------------------------
+# SEC-3: text Recheck did not write cannot drive the terminal
+# --------------------------------------------------------------------------
+
+ESC, BEL = "\x1b", "\x07"
+CONTROLS = (ESC, BEL, "\x08", "\r", "\x9b", "\u202e")
+
+
+def _no_controls(text: str) -> None:
+    found = sorted({repr(ch) for ch in text if ch in CONTROLS})
+    assert not found, f"terminal control characters reached the output: {found}"
+
+
+def test_control_characters_in_a_letter_are_shown_escaped_not_sent_to_the_terminal(tmp_path):
+    from _support import EXIT_AWAITING_HUMAN, EXIT_OK, main, tabular_letter
+
+    store = tmp_path / "runs"
+    # Erase the line above; conceal everything after; write the clipboard (OSC 52).
+    letter = tabular_letter(tmp_path / "esc.txt", [
+        ("Post-traumatic stress disorder", 70),
+        (f"Tinnitus{ESC}[2K{ESC}[1A{ESC}[2K", 10),
+        (f"Tinnitus{ESC}[8m", 10),
+        (f"Tinnitus{ESC}]52;c;ZWNobyBQV05FRA=={BEL}", 10),
+    ], stated=80)
+    code, out, err = main("audit", letter, "--case", "esc", "--brief", store=store)
+    assert code == EXIT_OK, out + err
+    _no_controls(out + err)
+    assert r"Tinnitus\x1b[2K" in out and r"\x1b]52;c;" in out and r"\x07" in out
+
+    letters = tmp_path / "letters"
+    tabular_letter(letters / "pair.txt", [("Post-traumatic stress disorder", 60),
+                                          ("Right knee strain", 20),
+                                          (f"Limitation of motion of the knee{ESC}[8m", 10), ("Tinnitus", 10)],
+                            stated=70)
+    code, out, err = main("sweep", letters, store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    _no_controls(out + err)
+    assert r"\x1b[8m" in out
+
+
+def test_control_characters_in_a_hand_edited_case_file_are_shown_escaped(tmp_path):
+    import json
+
+    from _support import EXIT_AWAITING_HUMAN, main, tabular_letter
+
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "pair.txt", [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+                                                    ("Limitation of motion of the knee", 10), ("Tinnitus", 10)],
+                            stated=70)
+    code, out, err = main("audit", letter, "--case", "c1", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    path = store / "c1" / "case.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["decisions"][2]["condition"] = f"Limitation of motion of the knee{ESC}[1A{ESC}[2K\u202e"
+    raw["decisions"][2]["note"] = f"not stated{BEL}\r{ESC}[8m"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    code, out, err = main("show", "--case", "c1", store=store)
+    _no_controls(out + err)
+    assert r"\x1b[1A" in out and r"\u202e" in out and r"\x07\x0d\x1b[8m" in out

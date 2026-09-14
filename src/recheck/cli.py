@@ -761,7 +761,49 @@ def _configure_logging(debug: bool) -> None:
             handler.addFilter(RedactCredentials())
 
 
+#: Characters a terminal acts on rather than prints: C0 controls other than tab
+#: and newline, DEL, C1 controls, and the bidirectional overrides and isolates.
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+
+
+def _visible(match: re.Match) -> str:
+    code = ord(match.group(0))
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
+
+class PrintableStream:
+    """A text stream that shows terminal control characters instead of sending them.
+
+    Everything Recheck prints can carry text it did not write: condition names
+    from the letter, a letter's file name, and anything a hand-edited
+    case.json holds. A letter whose condition read "Tinnitus" followed by
+    ESC [2K ESC [1A was printed as it stood, and the terminal erased report
+    lines; ESC [8m hid everything after it, ESC ] 52 wrote to the clipboard on
+    terminals that allow it. The characters are shown escaped ("\\x1b"), so the
+    reviewer sees that the text holds them.
+    """
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        self._stream.write(_TERMINAL_CONTROL.sub(_visible, text))
+        return len(text)
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
 def main(argv: list[str] | None = None) -> int:
+    stdout, stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = PrintableStream(stdout), PrintableStream(stderr)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+
+
+def _main(argv: list[str] | None) -> int:
     args = build_parser().parse_args(argv)
     _configure_logging(getattr(args, "debug", False))
     try:
