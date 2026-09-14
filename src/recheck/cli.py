@@ -761,7 +761,25 @@ def _configure_logging(debug: bool) -> None:
             handler.addFilter(RedactCredentials())
 
 
+def _tolerate_unencodable_output() -> None:
+    """Print a character the output encoding lacks as an escape, not a failure.
+
+    On Windows, output redirected to a file or a pipe is encoded in the ANSI
+    code page (cp1252) with errors="strict". A condition name with a
+    non-breaking hyphen ("Post-traumatic" as a word processor writes it), or a
+    file name outside cp1252, raised UnicodeEncodeError while the report or
+    triage was printed: a finished audit exited 3 with "'charmap' codec can't
+    encode character" and no report, and a sweep printed no triage at all.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass  # not a text stream that can be reconfigured (a test's StringIO)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerate_unencodable_output()
     args = build_parser().parse_args(argv)
     _configure_logging(getattr(args, "debug", False))
     try:
