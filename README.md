@@ -160,7 +160,7 @@ extract --(gate: extraction succeeded)--> classify --> assess --(gate: ready)-->
 |---|---|---|
 | `GraphBuilder`, custom `MultiAgentBase` nodes | `graph.py` | a per-letter state machine that can stop at `assess` and continue elsewhere |
 | Conditional edges | `graph.py` | returning `FAILED` does not stop downstream nodes in this SDK version, so the gates are topology. They must also be *stable*: Strands re-evaluates them when it persists the session, and a condition that flips after its node runs empties the resume point |
-| `Interrupt` raised from a node | `graph.py: AssessNode` | the reviewer's question, with its possible outcomes in the interrupt reason |
+| `Interrupt` returned from a custom node (`MultiAgentResult(status=INTERRUPTED)`) | `graph.py: AssessNode` | the reviewer's question, with its possible outcomes in the interrupt reason |
 | `FileSessionManager` | `graph.py: build_graph` | the only store of graph state, restored as the graph is built. Resume, show and sweep accept a session only in the shape `assess` leaves it (one interrupt, raised by `assess` for this case, nothing else to re-run); resume puts the session and case file back if the resumed run fails |
 | `HookProvider` on `BeforeNodeCallEvent` | `graph.py: NodeTimeline` | records which process ran each node, printed in every report |
 | `Agent.stream_async(structured_output_model=…, limits={"turns": 1}, cancel_signal=…)`, on its own thread and event loop | `classify.py` | one bounded, validated classification call. The raw tool-use JSON is re-read, so a second answer or a repeated key discards the output, and an answer that arrives after the wall-clock budget is never used |
