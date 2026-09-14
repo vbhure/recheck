@@ -52,7 +52,8 @@ class Outcome:
 
     kind is "text" (value: the text), "too_large" (value: the reason),
     "invisible" (value: the reason; text drawn invisibly, as an OCR layer is),
-    "error" (value: the exception pypdf raised, to be re-raised as itself),
+    "error" (value: the exception pypdf raised; the parent re-raises a pypdf error or OSError as
+    itself and anything else as a PdfReadError naming it),
     "timeout" (the budget ran out and the child was killed) or "died" (the
     child ended without a readable report; value: why).
     """
