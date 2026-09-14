@@ -151,14 +151,27 @@ _LEFT = re.compile(r"\bleft\b")
 _RIGHT = re.compile(r"\bright\b")
 _BOTH = re.compile(
     r"\bbilateral(?:ly)?\b|\bboth (?:arms|legs|hands|feet|knees|ankles|wrists|elbows|shoulders|hips)\b"
+    r"|\bleft\s*(?:and|&|/)\s*right\b|\bright\s*(?:and|&|/)\s*left\b"
+    r"|\b(?:left|right) (\w+) (?:and|&) (?:left|right) \1\b"
 )
+# "Rt knee strain, onset after left ankle injury": an abbreviated side is not
+# read as a side, but it is still a side a reader sees.
+_LEFT_ABBREVIATION = re.compile(r"\b(?:lt|l)\b")
+_RIGHT_ABBREVIATION = re.compile(r"\b(?:rt|r)\b")
 
 
 def _sides_in(text: str) -> str:
     low = " ".join(text.lower().split())
     left, right = bool(_LEFT.search(low)), bool(_RIGHT.search(low))
-    if _BOTH.search(low) or (left and right):
+    if _BOTH.search(low):
         return "both"
+    if (left and right) or (left and _RIGHT_ABBREVIATION.search(low)) or (right and _LEFT_ABBREVIATION.search(low)):
+        # Both sides named, but not as one evaluation of both: the other side
+        # belongs to text the linked-clause and handedness patterns did not
+        # strip ("Left hip strain, onset after right knee disability").
+        # Reading "both" put a one-sided disability in the 4.26 factor; which
+        # side is meant is a question, not a guess.
+        return "unknown"
     return "left" if left else "right" if right else "unknown"
 
 

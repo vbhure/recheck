@@ -99,3 +99,45 @@ def test_a_limb_word_beside_a_mental_disorder_is_not_the_lexicons_call(tmp_path)
     code, out, _ = main("audit", letter, "--case", "osa", "--brief", store=tmp_path / "runs")
     assert "POTENTIAL DISCREPANCY" not in out
     assert "extremity group: lower [lexicon]   side: right" not in out
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-2: "both" was asserted whenever the words left and right both
+# appeared in a name, whatever joined them. Any linked-condition wording or
+# stray side word not stripped from the name turned a one-sided disability
+# into a bilateral one and put it in the 4.26 factor; an abbreviated side
+# beside the other side's word was read as that other side.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "condition,side",
+    [
+        ("Left hip strain, onset after right knee disability", "unknown"),
+        ("Residuals of shell fragment wound, right thigh, with retained fragment left in place", "unknown"),
+        ("LEFT shoulder impingement syndrome (subsequent to right shoulder surgery)", "unknown"),
+        ("Rt knee strain, onset after left shoulder surgery", "unknown"),
+        ("Radiculopathy, Lt. upper extremity (onset after right knee strain)", "unknown"),
+        # controls: an explicit statement of both sides is still one evaluation of both
+        ("Knee strain, left and right", "both"),
+        ("Knee strain, right & left", "both"),
+        ("Right knee and left knee strain", "both"),
+        ("Bilateral knee strain", "both"),
+        ("Strain of both knees", "both"),
+        ("Left knee strain", "left"),
+        ("L4-L5 radiculopathy, left lower extremity", "left"),
+    ],
+)
+def test_both_sides_are_read_only_from_wording_that_names_both(condition, side):
+    assert derive_laterality(condition) == side
+
+
+def test_a_stray_right_does_not_put_a_left_hip_in_the_bilateral_factor(tmp_path):
+    # true reading: two LEFT leg disabilities, 20 and 30 -> 44 -> 40%, no factor
+    letter = _prose_letter(tmp_path / "hip.txt", [
+        "Service connection for left hip strain, onset after right knee disability, is granted with an "
+        "evaluation of 20 percent.",
+        "Service connection for left ankle strain is granted with an evaluation of 30 percent."], 40)
+    code, out, _ = main("audit", letter, "--case", "hip", "--brief", store=tmp_path / "runs")
+    assert "side: both" not in out
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert code != EXIT_OK or "NO DISCREPANCY FOUND" in out
