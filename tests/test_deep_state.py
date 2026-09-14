@@ -334,6 +334,22 @@ def test_possible_degrees_edited_on_file_are_not_printed_as_recheck_s(store, tmp
     assert "could be 90%" not in out and "COULD NOT PROCEED 1" in _flat(out), out + err
 
 
+def test_possible_degrees_edited_onto_a_run_that_did_not_finish_are_refused(store, tmp_path):
+    """A run stopped after extract: the report printed "possible final degrees 90%"."""
+    import asyncio
+
+    from recheck.graph import ExtractNode, open_case
+
+    letter = tabular_letter(tmp_path / "docs" / "p.txt", PAIR, stated=70)
+    case_store = CaseStore(store)
+    open_case(case_store, "p", str(letter))
+    asyncio.run(ExtractNode(case_store, "p", str(letter)).invoke_async("extract"))
+    assert case_store.load("p").status == "extracted"
+    _edit(store, "p", lambda raw: raw.update(possible_degrees=[90]))
+    code, out, err = main("show", "--case", "p", store=store)
+    assert code == EXIT_CANNOT_PROCEED and "90%" not in out, out + err
+
+
 def test_a_condition_never_unknown_is_not_reported_as_unasked(store, tmp_path):
     work = tmp_path / "docs"
     tabular_letter(work / "d.txt", DISCREPANT, stated=70)

@@ -498,6 +498,7 @@ class CaseStore:
             raise CaseCorrupt(f"case {case_id} lists an unknown fact for a condition it does not have")
         _check_as_read(case_id, case, decisions)
         _check_provenance(case_id, case, decisions)
+        _check_possibilities(case_id, case, decisions)
         _check_result(case_id, case, decisions)
         return case
 
@@ -726,6 +727,49 @@ def _trace_agrees(computed: list[dict[str, Any]], final: int, combined: int,
     return True
 
 
+def _check_possibilities(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """Possible degrees and "nobody was asked" indices on file are the ones assess gives for the facts.
+
+    The report and the triage print both as Recheck's findings. Edited on
+    file, an open question read "could be 90%" for a letter whose facts give
+    70% or 80%, and a complete case said "unknown facts for [1] could not
+    change this result, so nobody was asked" of a condition with no unknown
+    fact.
+    """
+    m = _assessed(decisions)
+    if case.immaterial_unknowns and case.immaterial_unknowns != list(m.unknown):
+        raise CaseCorrupt(f"case {case_id} lists an unknown fact its conditions do not have")
+    possible = case.possible_degrees
+    if case.status == "awaiting_human":
+        wrong = possible != list(m.possible)
+    elif case.status == "ready":
+        # Kept from the question the reviewer answered; the answers pick one of them.
+        wrong = bool(possible) and m.settled and not set(m.possible) <= set(possible)
+    elif case.status == "complete":
+        # Its result is re-derived by _check_result; the report prints no possible degrees for it.
+        wrong = False
+    else:
+        # None at all is allowed: an undetermined case whose possibilities were
+        # not enumerated has none, and a case that never reached assess has none.
+        wrong = bool(possible) and possible != list(m.possible)
+    if wrong:
+        raise CaseCorrupt(f"case {case_id} records possible final degrees {possible[:8]} that its facts do not give")
+
+
+_ASSESSED: dict[tuple[tuple[int, str, str], ...], Any] = {}
+
+
+def _assessed(decisions: list[Decision]):
+    """materiality.assess for these facts, cached: a sweep loads each case several times,
+    and only the percentage, group and side of each condition enter it."""
+    key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
+    if key not in _ASSESSED:
+        if len(_ASSESSED) > 512:
+            _ASSESSED.clear()
+        _ASSESSED[key] = assess(decisions)
+    return _ASSESSED[key]
+
+
 _DERIVED: dict[tuple[tuple[int, str, str], ...], tuple | None] = {}
 
 
@@ -740,7 +784,7 @@ def _derive(decisions: list[Decision]) -> tuple | None:
     """
     key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
     if key not in _DERIVED:
-        m = assess(decisions)
+        m = _assessed(decisions)
         # Not only unknown facts: a single evaluation naming both sides can
         # leave M21-1's reading open with every fact known.
         if not m.settled:
