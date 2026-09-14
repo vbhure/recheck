@@ -242,6 +242,10 @@ def cmd_audit(args) -> int:
     if not source.is_file():
         print(f"[recheck] no such document: {_shown_path(source)}", file=sys.stderr)
         return EXIT_CANNOT_PROCEED
+    # Before --fresh discards anything: an unknown provider, a provider that
+    # is not configured or a fixture that cannot be used was refused only
+    # after the case on file - reviewer's answers included - had been deleted.
+    factory, note, label = _resolve_factory(args)
     try:
         with store.lock(args.case):
             if store.exists(args.case):
@@ -257,7 +261,6 @@ def cmd_audit(args) -> int:
                           file=sys.stderr)
                     return EXIT_CANNOT_PROCEED
 
-            factory, note, label = _resolve_factory(args)
             print(f"[recheck] {note}")
             outcome = _run_audit(store, args.case, source, factory, label)
             return _finish(args, store, outcome)

@@ -61,3 +61,25 @@ def test_a_sweep_prints_its_triage_to_a_cp1252_stream_when_a_file_name_is_outsid
     assert "CASELOAD TRIAGE" in sweep.stdout
     assert "COULD NOT PROCEED" in sweep.stdout
     assert sweep.returncode == EXIT_CANNOT_PROCEED
+
+
+# ---------------------------------------------------------------------------
+# audit --fresh must not discard the case before the audit can run
+# ---------------------------------------------------------------------------
+
+LETTERS = ROOT / "fixtures" / "letters"
+
+
+def test_audit_fresh_with_an_unusable_provider_keeps_the_answered_case_on_file(tmp_path):
+    """--fresh deleted the case, reviewer's answer included, and then refused the provider."""
+    store = tmp_path / "runs"
+    letter = LETTERS / "07_clinical_terms.txt"
+    assert main("audit", letter, "--case", "keep", store=store)[0] == EXIT_AWAITING_HUMAN
+    assert main("resume", "--case", "keep", "--answer", "1=upper,2=upper", store=store)[0] == EXIT_OK
+
+    code, _, err = main("audit", letter, "--case", "keep", "--fresh", "--model", "no-such-provider", store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "no-such-provider" in err
+    code, out, _ = main("show", "--case", "keep", "--brief", store=store)
+    assert code == EXIT_OK, "the answered case was deleted by a command that then refused to run"
+    assert "reviewer" in out.lower()
