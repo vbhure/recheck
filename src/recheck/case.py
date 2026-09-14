@@ -215,18 +215,53 @@ class CaseSnapshot:
     session: tuple[tuple[str, ...], dict[str, bytes]] | None
 
 
+#: What a snapshot may hold in memory. A case's session is a few JSON files of
+#: a few kilobytes.
+_SESSION_READ_LIMIT = 8 * 1024 * 1024
+
+
+def _is_link(path: pathlib.Path) -> bool:
+    """A symbolic link, or any other reparse point: a Windows junction is not a symlink to pathlib."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _read_tree(root: pathlib.Path) -> tuple[tuple[str, ...], dict[str, bytes]] | None:
-    """(sub-directories, {file: bytes}) under root, as POSIX relative paths; None if root is absent."""
+    """(sub-directories, {file: bytes}) under root, as POSIX relative paths; None if root is absent.
+
+    Links are refused, not followed, and so is more than _SESSION_READ_LIMIT.
+    rglob followed a junction planted in a session: every resume read the
+    linked tree into memory, and after a resume that failed - a read-only
+    case.json is enough - restore() wrote the linked files back as real ones,
+    copying a directory from outside the store into it. Strands never writes
+    a link into a session.
+    """
+    if _is_link(root):
+        raise OSError(f"{root} is a link; a case's session is never one")
     if not root.is_dir():
         return None
-    directories, files = [], {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        if path.is_dir():
-            directories.append(relative)
-        else:
-            files[relative] = path.read_bytes()
-    return tuple(directories), files
+    directories, files, size = [], {}, 0
+    pending = [root]
+    while pending:
+        for path in sorted(pending.pop().iterdir()):
+            relative = path.relative_to(root).as_posix()
+            if _is_link(path):
+                raise OSError(f"the session under {root} holds a link, {relative}; a case's session never does")
+            if path.is_dir():
+                directories.append(relative)
+                pending.append(path)
+                continue
+            with path.open("rb") as handle:
+                data = handle.read(_SESSION_READ_LIMIT - size + 1)
+            size += len(data)
+            if size > _SESSION_READ_LIMIT:
+                raise OSError(f"the session under {root} holds more than {_SESSION_READ_LIMIT // 2**20} MB; "
+                              f"a case's session is a few small files")
+            files[relative] = data
+    return tuple(sorted(directories)), files
 
 
 class CaseStore:
