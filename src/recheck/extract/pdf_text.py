@@ -51,7 +51,9 @@ class Outcome:
     """What the child reported.
 
     kind is "text" (value: the text), "too_large" (value: the reason),
-    "error" (value: the exception pypdf raised, to be re-raised as itself),
+    "invisible" (value: the reason; text drawn invisibly, as an OCR layer is),
+    "error" (value: the exception pypdf raised; the parent re-raises a pypdf error or OSError as
+    itself and anything else as a PdfReadError naming it),
     "timeout" (the budget ran out and the child was killed) or "died" (the
     child ended without a readable report; value: why).
     """
@@ -109,13 +111,24 @@ def extract(data: bytes, name: str, limits: Limits, seconds: float) -> Outcome:
 
 
 class _Collect(logging.Handler):
-    """Keeps the child's log records (pypdf's warnings about a malformed file)."""
+    """Keeps the child's log records (pypdf's warnings about a malformed file), up to LIMIT.
+
+    All of them were replayed: a 271 KB PDF with a deeply nested junk
+    dictionary printed 44,264 warning lines (5.9 MB) before its report. The
+    rest are counted, and one record says how many were not shown.
+    """
+
+    LIMIT = 20
 
     def __init__(self) -> None:
         super().__init__()
         self.records: list[logging.LogRecord] = []
+        self.dropped = 0
 
     def emit(self, record: logging.LogRecord) -> None:
+        if len(self.records) >= self.LIMIT:
+            self.dropped += 1
+            return
         # Flattened as logging.handlers.QueueHandler does, so it pickles.
         record.msg, record.args, record.exc_info, record.exc_text = record.getMessage(), None, None, None
         self.records.append(record)
@@ -151,6 +164,11 @@ def _serve(request: dict) -> None:
         kind, value = read(request["data"], request["name"], Limits(**request["limits"]))
     except Exception as exc:  # noqa: BLE001 - reported to the parent, which re-raises it
         kind, value = "error", exc
+    if collect.dropped:
+        collect.records.append(logging.makeLogRecord({
+            "name": "pypdf", "levelno": logging.WARNING, "levelname": "WARNING",
+            "msg": f"{collect.dropped:,} more pypdf warnings about {request['name']} not shown",
+        }))
     try:
         payload = pickle.dumps((kind, value, collect.records))
     except Exception as exc:  # noqa: BLE001 - an exception or record that does not pickle
@@ -159,8 +177,63 @@ def _serve(request: dict) -> None:
     report.flush()
 
 
+class _InvisibleText:
+    """Counts text drawn invisibly - render mode 3, or 7 (clipping only) - via pypdf's operator visitors.
+
+    That is how OCR software lays its text over a scanned image: the page
+    shows the image, and the extracted text is the OCR's reading of it. Read
+    as a text layer, a scan whose OCR misread "70%" as "80%" was reported as
+    NO DISCREPANCY FOUND at exit 0 for a letter whose image states 70%.
+    The render mode belongs to the graphics state: q/Q save and restore it,
+    and so does the implicit q/Q around a Form XObject (Do). A string of
+    blanks draws nothing either way, so it does not count.
+    """
+
+    SHOW = (b"Tj", b"TJ", b"'", b'"')
+    INVISIBLE = (3, 7)
+
+    def __init__(self) -> None:
+        self.mode, self.shown = 0, 0
+        self.saved: list[int] = []
+        self.forms: list[tuple[int, int]] = []
+
+    def before(self, operator: bytes, operands: list, *_: object) -> None:
+        if operator == b"q":
+            self.saved.append(self.mode)
+        elif operator == b"Q":
+            # A Q with nothing saved restores nothing: pdf.js, MuPDF and PDFium
+            # ignore it and keep drawing invisibly. Resetting to 0 here read
+            # "3 Tr Q (80%) Tj" as visible text.
+            if self.saved:
+                self.mode = self.saved.pop()
+        elif operator == b"Do":
+            self.forms.append((len(self.saved), self.mode))
+        elif operator == b"Tr" and operands:
+            try:
+                self.mode = int(operands[0])
+            except (TypeError, ValueError):
+                pass
+        elif operator in self.SHOW and self.mode in self.INVISIBLE and _glyphs(operands):
+            self.shown += 1
+
+    def after(self, operator: bytes, *_: object) -> None:
+        if operator == b"Do" and self.forms:
+            depth, self.mode = self.forms.pop()
+            del self.saved[depth:]
+
+
+def _glyphs(operands: list) -> bool:
+    """Whether a text-showing operator's operands hold a string that is not all blanks (TJ: inside its array)."""
+    for operand in operands:
+        if isinstance(operand, list) and _glyphs(operand):
+            return True
+        if isinstance(operand, (str, bytes)) and operand.strip():
+            return True
+    return False
+
+
 def read(data: bytes, name: str, limits: Limits) -> tuple[str, str]:
-    """("text", text) or ("too_large", reason). Raises whatever pypdf raises.
+    """("text", text), ("too_large", reason) or ("invisible", reason). Raises whatever pypdf raises.
 
     Runs in the child; callable directly only where no time budget is needed.
     """
@@ -198,7 +271,15 @@ def read(data: bytes, name: str, limits: Limits) -> tuple[str, str]:
                     f"{name}'s page content inflates to more than {limits.max_content_bytes / 1e6:.0f} MB. "
                     f"A rating decision is a few pages; refusing rather than parsing it."
                 )
-            pages.append(page.extract_text() or "")
+            invisible = _InvisibleText()
+            pages.append(page.extract_text(visitor_operand_before=invisible.before,
+                                           visitor_operand_after=invisible.after) or "")
+            if invisible.shown:
+                return "invisible", (
+                    f"{name} carries text that is not drawn on the page (PDF text render mode 3 or 7), which is how "
+                    f"OCR software lays its reading over a scanned image. Recheck does not read OCR text, which "
+                    f"can misread a figure; supply a text-layer PDF or a .txt transcript."
+                )
             total += len(pages[-1]) + 1
             if total > limits.max_chars:  # stop at the page that crosses it
                 return "too_large", (

@@ -794,7 +794,27 @@ class PrintableStream:
         return getattr(self._stream, name)
 
 
+def _tolerant_output() -> None:
+    """Print what the output encoding cannot represent as an escape, not an error.
+
+    A report redirected to a file on Windows is written in the ANSI code page.
+    A condition name holding a character outside it (a Unicode hyphen, a
+    non-Latin-1 accent) raised UnicodeEncodeError while printing a finished
+    report: exit 3 with only a codec message, for a case that was complete,
+    and `show` failed the same way. Recheck's own wording, figures and verdicts
+    are ASCII, so nothing the result rests on is changed.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass  # not a text stream that can be reconfigured (None, StringIO)
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Reconfigure the real streams first; the wrapper then escapes controls
+    # and the stream's own encoder escapes what its code page lacks.
+    _tolerant_output()
     stdout, stderr = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = PrintableStream(stdout), PrintableStream(stderr)
     try:

@@ -41,6 +41,7 @@ holds the domain facts. There is no second hand-written copy of graph state.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import pathlib
@@ -152,10 +153,28 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
             # An OSError, so the extract node records "could not be read".
             raise ChildProcessError(f"the PDF reader stopped without a result ({outcome.value})")
         if outcome.kind == "error":
-            raise outcome.value  # type: ignore[misc] - what pypdf raised, as in-process
+            from pypdf.errors import PdfReadError, PyPdfError
+
+            if isinstance(outcome.value, (PyPdfError, OSError)):
+                raise outcome.value  # what pypdf raised, as in-process
+            # pypdf also fails on a malformed file with KeyError (a Type0 font
+            # without /DescendantFonts), NotImplementedError (an unknown
+            # filter), RecursionError (deeply nested arrays) and others. Raised
+            # as they were, they escaped the extract node: the case stayed
+            # 'open' with no reason and read as a stopped run. Reading the PDF
+            # failed; say so.
+            raise PdfReadError(f"{type(outcome.value).__name__}: {outcome.value}") from outcome.value  # type: ignore[misc]
         if outcome.kind == "too_large":
             raise DocumentTooLarge(str(outcome.value))
-        text = str(outcome.value)
+        if outcome.kind == "invisible":
+            raise ScannedDocument(str(outcome.value))
+        # pypdf decodes a font's ToUnicode map as UTF-16 code units, so a
+        # malformed map leaves a lone surrogate in the text. It is not a
+        # character: the Strands session could not write a question naming the
+        # condition (the case was left awaiting an answer nobody could give),
+        # and a finished report could not be printed. Pairs are joined; a lone
+        # one becomes U+FFFD, which no percentage or side is read from.
+        text = str(outcome.value).encode("utf-16", "surrogatepass").decode("utf-16", "replace")
         if not text.strip():
             raise ScannedDocument(
                 f"{p.name} has no extractable text layer. This document requires OCR, "
@@ -163,8 +182,13 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
                 f"or a .txt transcript."
             )
         return text
+    # UTF-8, or UTF-16 when the file says so with a byte-order mark: Windows
+    # PowerShell 5.1's `Get-Content letter > letter.txt` writes UTF-16 LE, and
+    # such a transcript was refused as a UnicodeDecodeError. Nothing is guessed
+    # without the mark.
+    utf16 = data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
     # Universal newlines, as Path.read_text gives: a bare CR is a line break.
-    text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    text = data.decode("utf-16" if utf16 else "utf-8").replace("\r\n", "\n").replace("\r", "\n")
     if len(text) > MAX_DOCUMENT_CHARS:
         raise DocumentTooLarge(too_long)
     return text

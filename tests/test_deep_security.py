@@ -141,7 +141,7 @@ def _no_controls(text: str) -> None:
 
 
 def test_control_characters_in_a_letter_are_shown_escaped_not_sent_to_the_terminal(tmp_path):
-    from _support import EXIT_AWAITING_HUMAN, EXIT_OK, main, tabular_letter
+    from _support import EXIT_AWAITING_HUMAN, EXIT_CANNOT_PROCEED, EXIT_OK, main, tabular_letter
 
     store = tmp_path / "runs"
     # Erase the line above; conceal everything after; write the clipboard (OSC 52).
@@ -151,10 +151,12 @@ def test_control_characters_in_a_letter_are_shown_escaped_not_sent_to_the_termin
         (f"Tinnitus{ESC}[8m", 10),
         (f"Tinnitus{ESC}]52;c;ZWNobyBQV05FRA=={BEL}", 10),
     ], stated=80)
+    # The files lane (FILES-6) refuses a condition name holding a control
+    # character at extraction, so these letters are no longer read at all; the
+    # refusal itself must not send one to the terminal either.
     code, out, err = main("audit", letter, "--case", "esc", "--brief", store=store)
-    assert code == EXIT_OK, out + err
+    assert code == EXIT_CANNOT_PROCEED and "control character" in err, out + err
     _no_controls(out + err)
-    assert r"Tinnitus\x1b[2K" in out and r"\x1b]52;c;" in out and r"\x07" in out
 
     letters = tmp_path / "letters"
     tabular_letter(letters / "pair.txt", [("Post-traumatic stress disorder", 60),
@@ -162,9 +164,21 @@ def test_control_characters_in_a_letter_are_shown_escaped_not_sent_to_the_termin
                                           (f"Limitation of motion of the knee{ESC}[8m", 10), ("Tinnitus", 10)],
                             stated=70)
     code, out, err = main("sweep", letters, store=store)
-    assert code == EXIT_AWAITING_HUMAN, out + err
+    assert code == EXIT_CANNOT_PROCEED, out + err
     _no_controls(out + err)
-    assert r"\x1b[8m" in out
+
+    # A bidirectional override is not a control character (Unicode category
+    # Cf). The parser drops Cf characters from the letter's text, but a file
+    # name can hold one ("invoice<U+202E>fdp.txt" reads "invoicetxt.pdf"), and
+    # the report prints the letter's name: it is shown escaped.
+    letter = tabular_letter(tmp_path / "bidi\u202efdp.txt", [
+        ("Post-traumatic stress disorder", 70),
+        ("Tinnitus", 10),
+    ], stated=70)
+    code, out, err = main("audit", letter, "--case", "bidi", store=store)
+    assert code == EXIT_OK, out + err
+    _no_controls(out + err)
+    assert r"bidi\u202efdp.txt" in out, out
 
 
 def test_control_characters_in_a_hand_edited_case_file_are_shown_escaped(tmp_path):
