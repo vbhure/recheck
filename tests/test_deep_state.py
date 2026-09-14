@@ -222,6 +222,36 @@ def test_answers_accepted_over_two_rounds_still_load(store, tmp_path):
     assert case.human_answers == {"2": "lower-left"} and case.recomputed_degree == 80
 
 
+def test_an_answer_on_file_for_a_condition_the_reviewer_was_never_asked_about_is_refused(store, tmp_path):
+    """XC-2: on a finished case whose facts all come from the letter, an answer
+    added on file that restates those facts passed every load check, and the
+    verdict said the figure rested on "the facts you supplied for [1]" at exit 0.
+    Every genuine answer leaves a fact established by the reviewer or a fact still
+    missing ("unknown"); an answer that did neither was never given."""
+    letter = tabular_letter(tmp_path / "docs" / "c.txt", [("Post-traumatic stress disorder", 60),
+                                                           ("Right knee strain", 20), ("Left knee strain", 10)],
+                            stated=70)
+    code, out, err = main("audit", letter, "--case", "c", store=store)
+    assert code == EXIT_OK and CaseStore(store).load("c").human_answers == {}, out + err
+    _edit(store, "c", lambda raw: raw.update(human_answers={"1": "lower-right"}))
+    with pytest.raises(CaseCorrupt, match="never asked"):
+        CaseStore(store).load("c")
+    code, out, err = main("show", "--case", "c", "--brief", store=store)
+    assert code == EXIT_CANNOT_PROCEED, out + err
+    assert "the facts you supplied" not in out
+
+
+def test_a_does_not_know_answer_on_file_still_loads(store, tmp_path):
+    """The genuine answer that establishes nothing: the fact stays missing, so the answer is not refused."""
+    _awaiting(store, tmp_path)
+    code, out, err = main("resume", "--case", "p", "--answer", "2=unknown", store=store)
+    assert code == EXIT_CANNOT_PROCEED, out + err
+    case = CaseStore(store).load("p")
+    assert case.status == "undetermined"
+    assert case.human_answers == {"2": "lower-unknown"}
+    assert case.load_decisions()[2].missing == ("side",)
+
+
 # ==========================================================================
 # STATE-3: a link in a case's session is refused, never followed
 # ==========================================================================

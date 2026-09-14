@@ -602,6 +602,12 @@ def _check_provenance(case_id: str, case: Case, decisions: list[Decision]) -> No
             problem = "a fact attributed to the reviewer, with no answer on file"
         elif answer is not None and answer != f"{d.extremity_group}-{d.laterality}":
             problem = f"an answer on file ({answer[:40]!r}) that is not its extremity group and side"
+        elif answer is not None and Actor.HUMAN not in (d.group_by, d.side_by) and not d.missing:
+            # Only a condition with a fact missing is asked, and every accepted
+            # answer either establishes a fact (owned by the reviewer) or is
+            # "unknown" and leaves it missing. An answer that did neither was
+            # never given, and the verdict would cite it as supplied facts.
+            problem = "an answer on file for a condition the reviewer was never asked about"
         if problem:
             raise CaseCorrupt(f"case {case_id} decision [{index}] has {problem}")
 
