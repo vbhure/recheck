@@ -190,7 +190,7 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 ## Limitations
 
 - **Synthetic letters only.** Every letter in `fixtures/` was written for this project. No real veteran data is in the repository, and the parser has not met real VA correspondence.
-- **Narrative letters, not the code sheet,** and no OCR: an image-only PDF is refused.
+- **Narrative letters, not the code sheet,** and no OCR: an image-only PDF is refused, and so is a scan whose OCR text is laid invisibly over the image (a "searchable" scan).
 - **The parser fails closed, sometimes on ordinary wording.** Hard-wrapped all-caps prose, a year inside a condition name ("status post 2019 arthroscopy") or a percentage in an unrelated paragraph of the decision section make it refuse the letter rather than read it. A staged rating written under two different condition names reads as two ratings.
 - **No live model has been run.** The model boundary is exercised through the real Strands structured-output path with scripted payloads, including malformed and adversarial ones. No accuracy claim is made for any provider.
 - **4.26 as currently in force.** Where 4.26(d) decides a result, the report says the exception took effect April 16, 2023; for a period before that date the prior rule applied the factor without exception. Recheck does not read the decision date.

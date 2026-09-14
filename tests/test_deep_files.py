@@ -113,3 +113,70 @@ def test_a_pdf_pypdf_fails_on_with_a_plain_exception_is_a_letter_that_could_not_
     assert raw["status"] == "unparsed" and raw["document_sha256"] is not None
     outcome = outcome_from_case(CaseStore(store), "bad", reused=True)
     assert "could not be read" in outcome.detail and "run stopped" not in outcome.detail
+
+
+# --------------------------------------------------------------------------
+# FILES-2: a scan with an OCR text layer
+# --------------------------------------------------------------------------
+
+def _ocr_scan(path, lines):
+    """What a scanner's "searchable PDF" is: the page image, and the OCR text over it, invisible."""
+    from fpdf import FPDF
+    from PIL import Image
+
+    pdf = FPDF()
+    pdf.add_page()
+    image = io.BytesIO()
+    Image.new("L", (850, 1100), 255).save(image, format="PNG")  # stands in for the scanned page
+    pdf.image(image, x=0, y=0, w=210, h=297)
+    pdf.set_font("Courier", size=9)
+    pdf.text_mode = "INVISIBLE"
+    for number, line in enumerate(lines):
+        pdf.text(10, 12 + 5 * number, line)
+    pdf.output(str(path))
+    return path
+
+
+def test_a_scan_with_an_ocr_text_layer_is_refused_like_an_image(tmp_path):
+    """Before: the OCR text was read as the letter's text, and a misread
+    stated figure (80% where the page says 70%) gave NO DISCREPANCY FOUND,
+    exit 0. The same letter as text is a POTENTIAL DISCREPANCY."""
+    lines = TABULAR.splitlines()
+    misread = [line.replace("70%", "80%") if line.startswith("COMBINED") else line for line in lines]
+    assert misread != lines
+    path = _ocr_scan(tmp_path / "scan.pdf", misread)
+    with pytest.raises(ScannedDocument, match="OCR"):
+        read_document(path)
+    code, out, err = main("audit", path, "--case", "scan", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED and "Traceback" not in out + err
+    assert "DISCREPANCY" not in out and "recomputed final degree" not in out
+    assert case_json(tmp_path / "runs", "scan")["status"] == "unparsed"
+
+
+@pytest.mark.parametrize("mode", [3, 7])
+def test_invisible_text_anywhere_in_the_text_layer_is_refused(tmp_path, mode):
+    """Visible text with one invisible rating row: the row is not on the page.
+    Mode 3 draws nothing; mode 7 only adds the glyphs to the clipping path."""
+    lines = TABULAR.splitlines()
+    content = (b"BT /F1 9 Tf 20 800 Td 12 TL " + _show(lines[:-1]) + b" ET "
+               b"BT %d Tr /F1 9 Tf 20 100 Td (  5. Limitation of flexion, left elbow ..... 40%%) Tj ET " % mode
+               + b"BT 0 Tr /F1 9 Tf 20 80 Td " + _show(lines[-1:]) + b" ET")
+    path = tmp_path / "hidden.pdf"
+    path.write_bytes(_one_page(content))
+    with pytest.raises(ScannedDocument, match="not drawn on the page"):
+        read_document(path)
+
+
+def test_control_a_render_mode_restored_before_any_text_is_still_read(tmp_path):
+    """Control (passes before and after): mode 3 set inside q/Q, or inside a
+    Form XObject, does not make the page's visible text invisible, and blanks
+    drawn in mode 3 are not text."""
+    form = b"q 3 Tr Q 3 Tr"
+    content = (b"q 3 Tr Q /X1 Do BT 3 Tr /F1 9 Tf 20 20 Td (  ) Tj [( ) -200 ( )] TJ ET "
+               b"BT 0 Tr /F1 9 Tf 20 800 Td 12 TL " + _show(TABULAR.splitlines()) + b" ET")
+    path = tmp_path / "visible.pdf"
+    path.write_bytes(_one_page(content, resources=b"/XObject << /X1 6 0 R >>", extra_objects=(
+        _stream(form, b"/Type /XObject /Subtype /Form /BBox [0 0 1 1] "),)))
+    assert "COMBINED EVALUATION FOR COMPENSATION: 70%" in read_document(path)
+    code, out, _ = main("audit", path, "--case", "visible", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_OK and "POTENTIAL DISCREPANCY" in out

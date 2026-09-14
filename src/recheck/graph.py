@@ -164,6 +164,8 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
             raise PdfReadError(f"{type(outcome.value).__name__}: {outcome.value}") from outcome.value  # type: ignore[misc]
         if outcome.kind == "too_large":
             raise DocumentTooLarge(str(outcome.value))
+        if outcome.kind == "invisible":
+            raise ScannedDocument(str(outcome.value))
         text = str(outcome.value)
         if not text.strip():
             raise ScannedDocument(
