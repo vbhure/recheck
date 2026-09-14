@@ -60,3 +60,15 @@ def test_every_bilateral_disability_left_out_still_reads_with_the_factor(tmp_pat
     assert code == 0
     assert any(line.strip().startswith("final degree with the factor") and line.strip().endswith("90%")
                for line in out.splitlines())
+
+
+def test_subtotal_of_one_pair_left_by_426d_does_not_cite_426b():
+    """Both arms and both legs form one 4.26(b) group, but 4.26(d) keeps only the
+    legs in the factor. The subtotal step lists two leg ratings and cited 4.26(b)
+    ("all four extremities, one factor")."""
+    paired = [Paired(10, "upper", "left"), Paired(10, "upper", "right"),
+              Paired(20, "lower", "left"), Paired(60, "lower", "right")]
+    ev = evaluate([10, 10, 20, 60, 70], paired=paired)
+    assert {m.extremity for m in ev.bilateral_members} == {"lower"}
+    assert len(ev.excluded_under_426d) == 2 and ev.final_degree == 100
+    assert ev.steps[0].rule == "38 CFR 4.26"

@@ -324,7 +324,9 @@ def evaluate(
 
     notes: list[str] = []
     four = {m.extremity for m in group} == set(EXTREMITIES)
-    rule = "38 CFR 4.26(b)" if four else "38 CFR 4.26"
+    # Cite 4.26(b) only for a factor that still spans both pairs. When 4.26(d)
+    # leaves one pair out, the subtotal is of that one pair: plain 4.26.
+    rule = "38 CFR 4.26(b)" if {m.extremity for m in best_members} == set(EXTREMITIES) else "38 CFR 4.26"
 
     if not best_members:
         notes.append(
