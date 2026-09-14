@@ -10,11 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 
 import pytest
 from strands.multiagent.base import Status
 
-from _support import UNLISTED, answer, batch, item, run_audit, scripted, tabular_letter
+from _support import (
+    EXIT_CANNOT_PROCEED,
+    UNLISTED,
+    answer,
+    batch,
+    item,
+    main,
+    run_audit,
+    scripted,
+    tabular_letter,
+)
 from recheck import classify as classify_module
 from recheck.case import CaseCorrupt, CaseStore
 from recheck.classify import classify
@@ -23,6 +34,7 @@ from recheck.graph import ClassifyNode, ComputeNode, ExtractNode, open_case
 from recheck.materiality import assess
 from recheck.provenance import Actor, Trace
 from recheck.report import render
+from recheck.sweep import question_is_open
 
 PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
         ("Limitation of motion of the knee", 10), ("Tinnitus", 10)]
@@ -183,3 +195,43 @@ def test_answering_the_group_leaves_the_side_the_letter_states_with_the_letter(t
     assert (after.extremity_group, after.group_by) == ("lower", Actor.HUMAN)
     assert (after.laterality, after.side_by) == ("right", Actor.DETERMINISTIC)
     assert "side - 2 from the letter" in " ".join(render(case).split())
+
+
+# --------------------------------------------------------------------------
+# The lexicon reads the rated condition, not the condition it is linked to
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name,group", [
+    ("Depressive disorder, secondary to left knee injury", "none"),
+    ("Scar, secondary to right ankle surgery", "unrecognised"),
+    ("Tinnitus, claimed as due to a left hand injury", "none"),
+])
+def test_the_lexicon_takes_no_group_from_a_linked_condition(name, group):
+    """Mutation lexicon_linked (the lexicon reads the whole name, not
+    primary_clause). A depressive disorder secondary to a knee injury became
+    a deterministic "lower" - a leg disability that can enter the bilateral
+    factor - and no test failed: the existing linked-clause cases name the
+    same extremity in both clauses."""
+    assert _classify_extremity(name) == group
+
+
+# --------------------------------------------------------------------------
+# A session holding another case's question is not this case's open question
+# --------------------------------------------------------------------------
+
+def test_a_session_copied_from_another_case_is_not_an_open_question(tmp_path):
+    """Mutation open_question_id (the interrupt id is not compared with this
+    case's). With B's session replaced by A's, `show` and the sweep offered
+    B's question as open and `resume --case B` answered it through A's
+    interrupt; no test failed."""
+    letter = tabular_letter(tmp_path / "pair.txt", PAIR, stated=70)
+    store, _ = run_audit(tmp_path / "runs", "a", letter)
+    run_audit(tmp_path / "runs", "b", letter)
+    assert question_is_open(store, store.load("b"))  # precondition
+    shutil.rmtree(store.session_dir("b"))
+    shutil.copytree(store.session_dir("a"), store.session_dir("b"))
+
+    assert not question_is_open(store, store.load("b"))
+    code, out, err = main("resume", "--case", "b", "--answer", "2=left", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED and "holds no open question" in err
+    assert store.load("b").status == "awaiting_human" and store.load("b").recomputed_degree is None
