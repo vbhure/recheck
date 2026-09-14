@@ -154,15 +154,22 @@ EXTREMITY_MARKERS = re.compile(
 # Clauses that name a DIFFERENT condition the rated one is linked to. The
 # rated condition's own anatomy and side come before them: in "Left knee
 # strain, secondary to right knee strain" the rated knee is the left one.
+# The list is closed, so a link worded another way is not stripped; "Left hip
+# strain, caused by right knee disability" read as both sides and entered the
+# 4.26 factor. recheck.classify reads two sides with no wording naming both
+# as unknown, and _lexical_group abstains on a limb beside a non-extremity
+# condition, for the wordings still missing here.
 _LINKED_CLAUSE = re.compile(
     r"[,;]?\s*\(?\b(?:secondary to|associated with|due to|claimed as|incident to|aggravated by|"
-    r"as a result of|resulting from)\b.*$",
+    r"as a result of|resulting from|caused by|related to|because of|attributable to|in connection with|"
+    r"compensating for|following|worsened by|exacerbated by)\b.*$",
     re.I,
 )
-# Handedness is not a side: "(right hand dominant)", "(major)", "right-handed".
+# Handedness is not a side: "(right hand dominant)", "(major)", "right-handed",
+# "right hand-dominant", "right handed", "right hand is dominant".
 _HANDEDNESS = re.compile(
     r"\((?:[^)]*\b(?:dominant|major|minor|handed)\b[^)]*)\)"
-    r"|\b(?:right|left)[- ]hand(?:ed)? dominant\b|\b(?:right|left)-handed\b",
+    r"|\b(?:right|left)[- ]hand(?:ed)?(?:[- ]|\s+is\s+)dominant\b|\b(?:right|left)[- ]handed\b",
     re.I,
 )
 
@@ -655,6 +662,12 @@ def _lexical_group(text: str) -> ExtremityGroup:
     lower = any(p in low for p in LOWER_PHRASES) or bool(words & LOWER_TERMS)
     if upper and lower:
         return "unrecognised"  # "hand and foot" - not the lexicon's call
+    if (upper or lower) and any(hint in low for hint in NON_EXTREMITY_HINTS):
+        # "Major depressive disorder worsened by right knee injury": the limb
+        # word may belong to a linked condition in wording _LINKED_CLAUSE does
+        # not list, and calling a mental disorder a leg disability put it in
+        # the 4.26 factor. Neither answer is the lexicon's call.
+        return "unrecognised"
     if upper:
         return "upper"
     if lower:

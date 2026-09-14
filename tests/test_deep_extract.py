@@ -1,0 +1,101 @@
+"""Deep review, lane "extract": misreads found by generating letter variants with known truth.
+
+Each test below failed on 12705f8 unless marked as a control. See the finding
+ids in the section comments.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from _support import EXIT_CANNOT_PROCEED, EXIT_OK, main
+from recheck.classify import derive_laterality
+from recheck.extract.deterministic import _classify_extremity, parse
+
+HEAD = "DEPARTMENT OF VETERANS AFFAIRS\n\nName: J. SYNTHETIC\n\n"
+
+
+def _prose_letter(path, sentences, stated):
+    body = "\n\n".join(sentences)
+    path.write_text(f"{HEAD}DECISION\n\n{body}\n\nYour combined evaluation for compensation is {stated} percent.\n",
+                    encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-1: a linked condition or the veteran's handedness written in a form
+# the clause patterns did not list became the rated condition's side and
+# extremity group, and a false POTENTIAL DISCREPANCY was reported at exit 0.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "condition,group,side",
+    [
+        ("Major depressive disorder related to right knee injury", "none", "unknown"),
+        ("Major depressive disorder worsened by right knee injury", "none", "unknown"),
+        ("Left knee strain, caused by right knee strain", "lower", "left"),
+        ("Left hip strain, related to service-connected right knee disability", "lower", "left"),
+        ("Left ankle sprain, attributable to right knee injury", "lower", "left"),
+        ("Left knee strain, because of right ankle instability", "lower", "left"),
+        ("Left knee strain (in connection with right knee surgery)", "lower", "left"),
+        ("Left hip strain, compensating for right knee disability", "lower", "left"),
+        ("Carpal tunnel syndrome, left wrist following right shoulder surgery", "upper", "left"),
+        ("Carpal tunnel syndrome, left wrist, right hand-dominant", "upper", "left"),
+        ("Carpal tunnel syndrome, left wrist, right-hand-dominant", "upper", "left"),
+        ("Carpal tunnel syndrome, left wrist, right handed", "upper", "left"),
+        ("Carpal tunnel syndrome, left wrist, right hand is dominant", "upper", "left"),
+        # a limb word beside a non-extremity condition, joined in wording no pattern lists
+        ("Obstructive sleep apnea, onset after right knee injury", "unrecognised", "right"),
+        ("Post-traumatic stress disorder with right hand tremor", "unrecognised", "right"),
+        # controls, unchanged: the listed forms, and a side that IS the rated condition's
+        ("Left knee strain, secondary to right knee strain", "lower", "left"),
+        ("Left wrist strain (right hand dominant)", "upper", "left"),
+        ("Carpal tunnel syndrome, dominant right hand", "upper", "right"),
+        ("Radiculopathy, right lower extremity, associated with lumbosacral strain", "lower", "right"),
+    ],
+)
+def test_a_linked_condition_or_handedness_is_not_the_rated_side_or_group(condition, group, side):
+    assert _classify_extremity(condition) == group
+    assert derive_laterality(condition) == side
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        # true reading: two LEFT leg disabilities, no bilateral factor: 20, 30 -> 44 -> 40%
+        "Service connection for left hip strain, caused by your service-connected right knee disability, "
+        "is granted with an evaluation of 20 percent.",
+        # true reading: a mental disorder and a left leg disability: 20, 30 -> 44 -> 40%
+        "Service connection for major depressive disorder related to right knee injury is granted with an "
+        "evaluation of 20 percent.",
+    ],
+)
+def test_a_linked_right_knee_does_not_create_a_bilateral_factor(tmp_path, first):
+    letter = _prose_letter(tmp_path / "linked.txt", [
+        first, "Service connection for left ankle strain is granted with an evaluation of 30 percent."], 40)
+    code, out, _ = main("audit", letter, "--case", "linked", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert "side: both" not in out
+    assert code == EXIT_OK and "NO DISCREPANCY FOUND" in out
+
+
+def test_handedness_does_not_put_a_left_wrist_in_the_bilateral_factor(tmp_path):
+    # true reading: two LEFT arm disabilities, 30 and 20 -> 44 -> 40%, no factor
+    letter = tmp_path / "handed.txt"
+    letter.write_text(HEAD + "RATING DECISION\n\n"
+                      "  1. Carpal tunnel syndrome, left wrist, right hand-dominant ........ 30%\n"
+                      "  2. Lateral epicondylitis, left elbow ........ 20%\n\n"
+                      "COMBINED EVALUATION FOR COMPENSATION: 40%\n", encoding="utf-8")
+    code, out, _ = main("audit", letter, "--case", "handed", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert code == EXIT_OK and "NO DISCREPANCY FOUND" in out
+
+
+def test_a_limb_word_beside_a_mental_disorder_is_not_the_lexicons_call(tmp_path):
+    letter = _prose_letter(tmp_path / "osa.txt", [
+        "Service connection for obstructive sleep apnea, onset after right knee injury, is granted with an "
+        "evaluation of 20 percent.",
+        "Service connection for left ankle strain is granted with an evaluation of 30 percent."], 40)
+    code, out, _ = main("audit", letter, "--case", "osa", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert "extremity group: lower [lexicon]   side: right" not in out
