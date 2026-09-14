@@ -419,7 +419,11 @@ def _establish_group(rating, answers, agent_factory, model_failure, trace, evide
         evidence=evidence,
     )
     if result.confidence < CONFIDENCE_FLOOR:
-        note = (f"the model said {result.extremity_group!r} at confidence {result.confidence:.2f}, "
+        shown = f"{result.confidence:.2f}"
+        if float(shown) >= CONFIDENCE_FLOOR:
+            # Rounded, 0.749 read "at confidence 0.75, below the 0.75 floor".
+            shown = repr(float(result.confidence))
+        note = (f"the model said {result.extremity_group!r} at confidence {shown}, "
                 f"below the {CONFIDENCE_FLOOR:.2f} floor, so it was not used")
         trace.add(Actor.DETERMINISTIC, "Classification NOT USED", note, value="unknown", evidence=evidence)
         return "unknown", None, result.confidence, note

@@ -78,14 +78,30 @@ def _scripted_factory(fixture: pathlib.Path | None):
     from recheck.extract.deterministic import primary_clause
     from recheck.models.scripted import ScriptedModel
 
-    if fixture is None or not fixture.exists():
+    if fixture is None:
         payload = {"classifications": []}
+    elif not fixture.is_file():
+        # A mistyped path used to run as the empty fixture, and the reviewer
+        # was told "the model output was invalid or incomplete" for every name
+        # the fixture would have answered.
+        raise ValueError(f"no such --classifications fixture: {fixture.as_posix()}")
     else:
         payload = json.loads(fixture.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            # A list or a number here raised AttributeError below: a traceback, exit 1.
+            raise ValueError(f"{fixture.name}: a --classifications fixture must be a JSON object, "
+                             f"not {type(payload).__name__}")
 
     anatomy = payload.get("anatomy")
     if anatomy:
-        confidence = float(payload.get("confidence", 0.9))
+        # A list here failed inside the model call ("the model call failed"),
+        # and a confidence that is a list or null raised TypeError: a traceback.
+        if not isinstance(anatomy, dict):
+            raise ValueError(f"{fixture.name}: \"anatomy\" must be a JSON object, not {type(anatomy).__name__}")
+        try:
+            confidence = float(payload.get("confidence", 0.9))
+        except TypeError as exc:
+            raise ValueError(f"{fixture.name}: \"confidence\" must be a number") from exc
 
         def responder(_tool, messages):
             text = "".join(block.get("text", "") for block in messages[-1].get("content", []))
@@ -244,12 +260,18 @@ def cmd_audit(args) -> int:
         return EXIT_CANNOT_PROCEED
     try:
         with store.lock(args.case):
+            if store.exists(args.case) and not args.fresh:
+                print(f"[recheck] case {args.case} already exists. Use `recheck{_store_flag(args)} show --case "
+                      f"{args.case}` to see it, `resume` to answer its question, or add --fresh to "
+                      f"discard it and audit again.", file=sys.stderr)
+                return EXIT_CANNOT_PROCEED
+            # The classifier is resolved before anything is discarded. It
+            # refuses a provider that is not ready, or a fixture that does not
+            # load, and resolved after the discard that refusal came too late:
+            # `audit --fresh --model <provider>` deleted an answered, complete
+            # case and then audited nothing.
+            factory, note, label = _resolve_factory(args)
             if store.exists(args.case):
-                if not args.fresh:
-                    print(f"[recheck] case {args.case} already exists. Use `recheck{_store_flag(args)} show --case "
-                          f"{args.case}` to see it, `resume` to answer its question, or add --fresh to "
-                          f"discard it and audit again.", file=sys.stderr)
-                    return EXIT_CANNOT_PROCEED
                 try:
                     store.discard(args.case)
                 except OSError as exc:
@@ -257,7 +279,6 @@ def cmd_audit(args) -> int:
                           file=sys.stderr)
                     return EXIT_CANNOT_PROCEED
 
-            factory, note, label = _resolve_factory(args)
             print(f"[recheck] {note}")
             outcome = _run_audit(store, args.case, source, factory, label)
             return _finish(args, store, outcome)

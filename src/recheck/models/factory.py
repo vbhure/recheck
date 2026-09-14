@@ -41,6 +41,7 @@ Design constraints, all of them load-bearing:
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -332,13 +333,17 @@ def load_config(
             endpoint, endpoint_variable = value, variable
             break
 
+    max_tokens = int(_positive_float(env, "RECHECK_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+    if max_tokens < 1:  # "0.5" is greater than zero, and became a cap of 0
+        raise ProviderNotConfigured(f"RECHECK_MAX_TOKENS must be at least 1, got {env.get('RECHECK_MAX_TOKENS')!r}")
+
     return ProviderConfig(
         provider=name,
         model_id=model_id,
         region=region,
         host=host,
         timeout_s=_positive_float(env, "RECHECK_TIMEOUT_S", DEFAULT_TIMEOUT_S),
-        max_tokens=int(_positive_float(env, "RECHECK_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
+        max_tokens=max_tokens,
         temperature=DEFAULT_TEMPERATURE,
         endpoint=endpoint,
         endpoint_variable=endpoint_variable,
@@ -353,6 +358,12 @@ def _positive_float(env: Mapping[str, str], key: str, default: float) -> float:
         value = float(raw)
     except ValueError as exc:
         raise ProviderNotConfigured(f"{key}={raw!r} is not a number") from exc
+    # float() also reads "inf", "nan" and "1e400". An infinite
+    # RECHECK_TIMEOUT_S removed the wall-clock budget, a NaN one abandoned
+    # every call as it was made (and after it was sent), and
+    # RECHECK_MAX_TOKENS=inf raised OverflowError with a traceback.
+    if not math.isfinite(value):
+        raise ProviderNotConfigured(f"{key}={raw!r} is not a finite number")
     if value <= 0:
         raise ProviderNotConfigured(f"{key} must be greater than zero, got {value}")
     return value
@@ -483,7 +494,8 @@ def build_model(config: ProviderConfig) -> Any:
     # The wall-clock budget in recheck.classify cancels the call, but a client
     # blocked in a socket read can hold the process open after that. So the
     # same budget is given to each provider's own client, with retries off:
-    # one call per letter means one attempt.
+    # one call per letter means one attempt. (The Strands Agent's own retry
+    # is turned off in build_agent_factory.)
     if config.provider == "bedrock":
         from botocore.config import Config
 
@@ -509,8 +521,11 @@ def build_model(config: ProviderConfig) -> Any:
             params={"temperature": config.temperature},
         )
     if config.provider == "ollama":
+        # max_tokens becomes Ollama's num_predict. Without it the request
+        # carried no output cap at all, while describe() and every live run
+        # printed "max_tokens 4096".
         return cls(host=config.host, model_id=config.model_id, temperature=config.temperature,
-                   ollama_client_args={"timeout": config.timeout_s})
+                   max_tokens=config.max_tokens, ollama_client_args={"timeout": config.timeout_s})
     raise ProviderNotConfigured(f"no constructor mapping for {config.provider!r}")
 
 
@@ -550,6 +565,13 @@ def build_agent_factory(
             model=build_model(config),
             system_prompt=SYSTEM_PROMPT,
             callback_handler=None,  # framework chatter is not product output
+            # One call per letter means one attempt at the Agent too. By
+            # default a Strands Agent retries a throttled model call itself
+            # (ModelRetryStrategy: six attempts, 4 s, 8 s, 16 s ... apart),
+            # whatever the client's retry setting: a throttled letter made
+            # four calls and ended "did not answer within 30s". None is
+            # Strands' "no retries" (max_attempts=1).
+            retry_strategy=None,
         )
 
     make.config = config  # type: ignore[attr-defined]
