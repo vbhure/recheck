@@ -14,7 +14,7 @@ import json
 import pytest
 from strands.multiagent.base import Status
 
-from _support import UNLISTED, batch, item, run_audit, scripted, tabular_letter
+from _support import UNLISTED, answer, batch, item, run_audit, scripted, tabular_letter
 from recheck import classify as classify_module
 from recheck.case import CaseCorrupt, CaseStore
 from recheck.classify import classify
@@ -22,6 +22,7 @@ from recheck.extract.deterministic import ExtractedRating, _classify_extremity, 
 from recheck.graph import ClassifyNode, ComputeNode, ExtractNode, open_case
 from recheck.materiality import assess
 from recheck.provenance import Actor, Trace
+from recheck.report import render
 
 PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
         ("Limitation of motion of the knee", 10), ("Tinnitus", 10)]
@@ -154,3 +155,31 @@ def test_the_lexicon_does_not_pick_a_group_for_a_name_that_names_an_arm_and_a_le
     foot or knee disability joined the arms' bilateral factor as a
     deterministic fact. No test failed."""
     assert _classify_extremity(name) == "unrecognised"
+
+
+# --------------------------------------------------------------------------
+# A reviewer's group answer does not take over the side the letter states
+# --------------------------------------------------------------------------
+
+def test_answering_the_group_leaves_the_side_the_letter_states_with_the_letter(tmp_path):
+    """Mutation assess_side_guard (the side is written from any answer, not
+    only for a missing side). The answer "lower" for a condition whose side
+    the letter states is interpreted as (lower, right); without the guard the
+    assess node rewrote side_by to HUMAN, and the report credited the reviewer
+    with a side read from the letter. No test failed."""
+    name = f"Right {UNLISTED}"
+    letter = tabular_letter(tmp_path / "side.txt", [("Post-traumatic stress disorder", 60),
+                                                    ("Left knee strain", 20), (name, 20)], stated=70)
+    store, _ = run_audit(tmp_path / "runs", "side", letter)
+    case = store.load("side")
+    assert case.status == "awaiting_human"  # precondition: the group of [2] matters
+    before = case.load_decisions()[2]
+    assert (before.extremity_group, before.laterality, before.side_by) == ("unknown", "right", Actor.DETERMINISTIC)
+
+    answer(store, "side", "2=lower")
+    case = store.load("side")
+    after = case.load_decisions()[2]
+    assert case.status == "complete"
+    assert (after.extremity_group, after.group_by) == ("lower", Actor.HUMAN)
+    assert (after.laterality, after.side_by) == ("right", Actor.DETERMINISTIC)
+    assert "side - 2 from the letter" in " ".join(render(case).split())
