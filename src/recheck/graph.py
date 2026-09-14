@@ -100,6 +100,26 @@ class DocumentTooLarge(Exception):
     """The document exceeds the bounds of anything plausibly a decision letter."""
 
 
+class NotUtf8Text(UnicodeDecodeError):
+    """A text letter that is not UTF-8 (nor UTF-16 with a byte-order mark). Refused; no encoding is guessed.
+
+    Notepad and Word save plain text as "ANSI" (Windows-1252) unless told
+    otherwise, and such a letter was refused with only the codec's message -
+    "'utf-8' codec can't decode byte 0x92 in position 67: invalid start byte" -
+    which does not tell a reviewer what to do. Guessing the encoding instead
+    would read some letters wrongly without saying so.
+    """
+
+    def __init__(self, name: str, error: UnicodeDecodeError) -> None:
+        super().__init__(error.encoding, error.object, error.start, error.end, error.reason)
+        self.name = name
+
+    def __str__(self) -> str:
+        return (f"{self.name} could not be read: it is not saved as UTF-8 text (byte 0x{self.object[self.start]:02x} "
+                f"at position {self.start} is not UTF-8, as in a file saved as 'ANSI' or Windows-1252 text). "
+                f"Recheck does not guess a text file's encoding: save the letter as UTF-8 and audit it again")
+
+
 def read_document(path: str | pathlib.Path) -> str:
     """Load letter text. PDFs must carry a text layer; OCR is out of scope.
 
@@ -188,7 +208,13 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
     # without the mark.
     utf16 = data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
     # Universal newlines, as Path.read_text gives: a bare CR is a line break.
-    text = data.decode("utf-16" if utf16 else "utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        decoded = data.decode("utf-16" if utf16 else "utf-8")
+    except UnicodeDecodeError as exc:
+        if utf16:
+            raise
+        raise NotUtf8Text(p.name, exc) from exc
+    text = decoded.replace("\r\n", "\n").replace("\r", "\n")
     if len(text) > MAX_DOCUMENT_CHARS:
         raise DocumentTooLarge(too_long)
     return text
@@ -228,7 +254,7 @@ class ExtractNode(MultiAgentBase):
         try:
             data = _document_bytes(path)
             text = _document_text(path, data)
-        except (ScannedDocument, DocumentTooLarge) as exc:
+        except (ScannedDocument, DocumentTooLarge, NotUtf8Text) as exc:
             text, reason = None, str(exc)
         except (OSError, UnicodeDecodeError, PyPdfError) as exc:
             text, reason = None, f"{path.name} could not be read ({type(exc).__name__}: {exc})"
