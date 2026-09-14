@@ -18,7 +18,7 @@ from _support import UNLISTED, batch, item, run_audit, scripted, tabular_letter
 from recheck import classify as classify_module
 from recheck.case import CaseCorrupt, CaseStore
 from recheck.classify import classify
-from recheck.extract.deterministic import ExtractedRating
+from recheck.extract.deterministic import ExtractedRating, _classify_extremity, parse
 from recheck.graph import ClassifyNode, ComputeNode, ExtractNode, open_case
 from recheck.materiality import assess
 from recheck.provenance import Actor, Trace
@@ -118,3 +118,39 @@ def test_the_compute_node_refuses_a_case_that_is_not_ready_even_when_its_facts_a
     assert result.status == Status.FAILED
     assert after.status == status and after.recomputed_degree is None
     assert "Arithmetic REFUSED" in [e["action"] for e in after.trace]
+
+
+# --------------------------------------------------------------------------
+# A "Label:" inside a captured condition name refuses the letter
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "RATING DECISION\n\n  1. Name: Jane Q Veteran, left knee strain ................ 10%\n\n"
+    "COMBINED EVALUATION FOR COMPENSATION: 10%\n",
+    "RATING DECISION\n\nVeteran Name: Jane Q Veteran left knee strain is granted with an evaluation of 10 percent.\n\n"
+    "Your combined evaluation for compensation is 10 percent.\n",
+    "RATING DECISION\n\nThe decision for Jane Q Veteran (file label: private) left knee strain is granted with an "
+    "evaluation of 10 percent.\n\nYour combined evaluation for compensation is 10 percent.\n",
+], ids=["row", "prose-label-line", "prose-inline-label"])
+def test_a_condition_name_holding_a_label_is_refused(text):
+    """Mutation name_colon. With the ':' check in _name_problem deleted, all
+    three letters were read, and "Name: Jane Q Veteran, left knee strain"
+    became a stored, printed condition - the veteran's name included - with a
+    figure computed on it; no test failed."""
+    extraction = parse(text)
+    assert not extraction.ok and extraction.ratings == []
+    assert "label" in extraction.unparsed_reason
+
+
+# --------------------------------------------------------------------------
+# The lexicon abstains on a name with both arm and leg vocabulary
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["Scar, left hand and left foot", "Raynaud's syndrome of the hands and feet",
+                                  "Degenerative arthritis, right shoulder and right knee"])
+def test_the_lexicon_does_not_pick_a_group_for_a_name_that_names_an_arm_and_a_leg(name):
+    """Mutation lexicon_both_groups. Deleting the 'upper and lower' abstention
+    made the lexicon call these "upper" (the arm terms are checked first), so a
+    foot or knee disability joined the arms' bilateral factor as a
+    deterministic fact. No test failed."""
+    assert _classify_extremity(name) == "unrecognised"
