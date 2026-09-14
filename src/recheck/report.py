@@ -120,8 +120,13 @@ def verdict(case: Case, *, question_open: bool = True) -> tuple[str, str]:
                   + f" ({source})")
     caveat = ""
     if case.has_trace_action(RULE_426D_ACTION):
+        # With an unknown fact the arithmetic assumes, the prior rule's figure
+        # is for that assumption: the facts can settle the result under
+        # 4.26(d) and still leave the prior rule's figure open.
+        assumption = (" with the fact the arithmetic assumes"
+                      if case.has_trace_action("Arithmetic shown with an assumed fact") else "")
         prior = (f"; for a decision period before that date the prior rule gives {case.alternative_degree}%"
-                 if case.alternative_degree is not None else "")
+                 f"{assumption}" if case.alternative_degree is not None else "")
         caveat = (f" This result depends on the 38 CFR 4.26(d) exception, in force from April 16, 2023"
                   f"{prior}. Check the period the decision covers.")
     if case.recomputed_degree == case.stated_combined:
@@ -226,8 +231,14 @@ def render(case: Case, *, show_trace: bool = True, notice: str | None = None, qu
             row("38 CFR 4.26 bilateral factor", "applied" if case.bilateral_applied else "not applied"),
         ]
         if case.alternative_degree is not None and case.alternative_degree != case.recomputed_degree:
-            other = "without" if case.bilateral_applied else "with"
-            out.append(row(f"final degree {other} the factor", f"{case.alternative_degree}%"))
+            if case.bilateral_applied and case.has_trace_action(RULE_426D_ACTION):
+                # 4.26(d) left SOME bilateral disabilities out. The alternative
+                # is every one of them in the factor, not no factor: it was
+                # labelled "without the factor" where that figure differs.
+                label = "final degree without 4.26(d)"
+            else:
+                label = f"final degree {'without' if case.bilateral_applied else 'with'} the factor"
+            out.append(row(label, f"{case.alternative_degree}%"))
         if case.immaterial_unknowns:
             listed = ", ".join(f"[{i}]" for i in case.immaterial_unknowns)
             out.append(f"  unknown facts for {listed} could not change this result, so nobody was asked")

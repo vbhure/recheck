@@ -200,16 +200,19 @@ def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool 
 
 
 @functools.lru_cache(maxsize=1 << 16)
-def _final_degree(ratings: tuple[int, ...], paired: tuple[tuple[int, str, str], ...], reading: bool) -> int:
-    """One engine run, keyed by the multisets that decide it.
+def _run(ratings: tuple[int, ...], paired: tuple[tuple[int, str, str], ...],
+         reading: bool) -> tuple[int, tuple[bool, int | None], tuple[int, bool]]:
+    """One engine run, keyed by the multisets that decide it: (final degree, `_account`, `_figures`).
 
     The final degree depends on which ratings there are and which of them
     are paired, not on their order, so completions that differ only in which
     of two identical evaluations is on which side share one run. The cache
     also serves the repeat assessments of one letter in one process (the
-    assess node, then compute, then the printed question).
+    assess node, then compute, then the printed question), and the report's
+    check of what every completion says about 4.26(d) and the factor.
     """
-    return evaluate(list(ratings), paired=[Paired(*p) for p in paired], lone_both_in_factor=reading).final_degree
+    evaluation = evaluate(list(ratings), paired=[Paired(*p) for p in paired], lone_both_in_factor=reading)
+    return evaluation.final_degree, _account(evaluation), _figures(evaluation)
 
 
 def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict[int, tuple[str, str]]]:
@@ -229,17 +232,64 @@ def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict
     is not the settled one, the derivation is shown for the first possible
     completion, and the facts it assumed are returned so the trace can say
     so. Any completion gives the same final degree; that is what settled means.
+
+    The same final degree is not the same account of 4.26(d). With a left
+    elbow 10, a right elbow 10, a left leg 90 and a shoulder 30 of unstated
+    side, the established facts leave the shoulder out, so 4.26(d) drops the
+    elbows' factor: 100%, "the prior rule gives 90%". Wherever the shoulder
+    is, it is in the factor, 4.26(d) plays no part and the prior rule gives
+    100% too. The report printed that caveat, and "factor not applied", as
+    fact. So the established facts are shown only when they say what every
+    possibility says about 4.26(d); otherwise a completion is. Where the
+    possibilities themselves differ, one in which 4.26(d) decides is shown,
+    so the reader is still told to check the decision period.
+
+    Nor is it the same arithmetic. With a left elbow 10, bilateral plantar
+    fasciitis 10 and a knee 10 of unstated side, the established facts keep
+    the lone both-sides rating out of the factor: combined value 27, "factor
+    not applied". Wherever the knee is, it joins the factor: 29, applied. So
+    the established facts are also shown only when their combined value and
+    factor are those of some possibility.
     """
     established = evaluate_established(decisions)
     m = assess(decisions)
-    if not m.unknown or not m.settled or established.final_degree == m.possible[0]:
+    if not m.unknown or not m.settled:
         return established, {}
-    answers, _ = m.by_answers[0]
-    assumed = dict(zip(m.unknown, answers))
-    completed = list(decisions)
-    for index, (group, side) in assumed.items():
-        completed[index] = dataclasses.replace(decisions[index], extremity_group=group, laterality=side)
-    return evaluate_established(completed), assumed
+    completions = []
+    for answers, _ in m.by_answers:
+        completed = list(decisions)
+        for index, (group, side) in zip(m.unknown, answers):
+            completed[index] = dataclasses.replace(decisions[index], extremity_group=group, laterality=side)
+        completions.append((answers, completed))
+    ratings = tuple(sorted(d.percent for d in decisions))
+    runs = [_run(ratings, *key) for _, completed in completions for key in _engine_keys(completed)]
+    accounts = {account for _, account, _ in runs}
+    if (established.final_degree == m.possible[0] and accounts == {_account(established)}
+            and _figures(established) in {figures for _, _, figures in runs}):
+        return established, {}
+    answers, completed = completions[0]
+    if len(accounts) > 1:
+        answers, completed = next((c for c in completions if evaluate_established(c[1]).excluded_under_426d),
+                                  completions[0])
+    return evaluate_established(completed), dict(zip(m.unknown, answers))
+
+
+def _account(evaluation: Evaluation) -> tuple[bool, int | None]:
+    """What a report says about 4.26(d): whether it decides the result, and the prior rule's figure."""
+    decided = bool(evaluation.excluded_under_426d)
+    return decided, evaluation.alternative_final_degree if decided else None
+
+
+def _figures(evaluation: Evaluation) -> tuple[int, bool]:
+    """What a report's arithmetic rests on besides 4.26(d): the combined value, and whether the factor applies."""
+    return evaluation.combined_value, evaluation.bilateral_applied
+
+
+def _engine_keys(decisions: Sequence[Decision]) -> list[tuple[tuple[tuple[int, str, str], ...], bool]]:
+    """(paired disabilities, reading) for each reading of these facts, as assess() keys its runs."""
+    facts = [(d.percent, d.extremity_group, d.laterality) for d in decisions]
+    return [(tuple(sorted((p.percent, p.extremity, p.side) for p in paired_disabilities(facts, both_in_factor=r))), r)
+            for r in readings_for(facts)]
 
 
 @dataclass(frozen=True)
@@ -349,7 +399,7 @@ def assess(decisions: Sequence[Decision]) -> Materiality:
     by_answers = []
     possible: set[int] = set()
     for answers, keys in planned:
-        degrees = {_final_degree(ratings, *key) for key in keys}
+        degrees = {_run(ratings, *key)[0] for key in keys}
         possible |= degrees
         by_answers.append((answers, tuple(sorted(degrees))))
     return Materiality(
