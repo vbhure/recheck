@@ -244,9 +244,11 @@ _PROSE_ANCHORS = (
     re.compile(r"\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
 )
 
+# Words are separated by \s+, not a space: letters are hard-wrapped, and "Your
+# combined evaluation for\ncompensation is 70 percent." was not found at all.
 _COMBINED = [
-    re.compile(r"COMBINED EVALUATION FOR COMPENSATION\s*:?\s*(\d{1,3})\s*%", re.I),
-    re.compile(r"combined evaluation for compensation is\s+(\d{1,3})\s+percent", re.I),
+    re.compile(r"COMBINED\s+EVALUATION\s+FOR\s+COMPENSATION\s*:?\s*(\d{1,3})\s*%", re.I),
+    re.compile(r"combined\s+evaluation\s+for\s+compensation\s+is\s+(\d{1,3})\s+percent", re.I),
 ]
 # "Your previous combined evaluation for compensation is 30 percent" is
 # history, not the statement under review. Taking the first match anywhere

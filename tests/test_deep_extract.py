@@ -189,3 +189,57 @@ def test_the_audit_does_not_report_a_discrepancy_against_an_ended_stage(tmp_path
     code, out, _ = main("audit", letter, "--case", "staged", "--brief", store=tmp_path / "runs")
     assert "POTENTIAL DISCREPANCY" not in out
     assert code == EXIT_CANNOT_PROCEED
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-4: a hard-wrapped combined evaluation statement ("Your combined
+# evaluation for\ncompensation is 30 percent.") was not found, so an ordinary
+# prose letter came back "COULD NOT READ THE LETTER" (exit 3). The rating
+# statements themselves are matched across line breaks; this one was not.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cut", range(2, 6))  # a break inside the phrase; 1 and 6 were already read
+def test_a_wrapped_combined_evaluation_statement_is_read(cut):
+    words = "Your combined evaluation for compensation is 30 percent.".split(" ")
+    statement = " ".join(words[:cut]) + "\n" + " ".join(words[cut:])
+    extraction = parse(HEAD + "DECISION\n\n"
+                       "Service connection for right knee strain is granted with an evaluation of\n"
+                       "20 percent effective January 9, 2026.\n\n"
+                       "Service connection for tinnitus is granted with an evaluation of 10 percent\n"
+                       "effective January 9, 2026. " + statement + "\n")
+    assert extraction.ok, extraction.unparsed_reason
+    assert extraction.stated_combined == 30
+    assert [r.percent for r in extraction.ratings] == [20, 10]
+
+
+def test_a_wrapped_tabular_combined_statement_is_read():
+    extraction = parse(HEAD + "RATING DECISION\n\n  1. Tinnitus (DC 6260) ........ 10%\n\n"
+                       "COMBINED EVALUATION FOR\nCOMPENSATION: 10%\n")
+    assert extraction.ok, extraction.unparsed_reason
+    assert extraction.stated_combined == 10
+
+
+def test_a_wrapped_previous_combined_evaluation_is_still_history():
+    extraction = parse(HEAD + "RATING DECISION\n\n  1. Tinnitus (DC 6260) ........ 10%\n\n"
+                       "Your previous combined evaluation for\ncompensation is 0 percent. Your combined\n"
+                       "evaluation for compensation is 10 percent.\n")
+    assert extraction.ok, extraction.unparsed_reason
+    assert extraction.stated_combined == 10
+
+
+def test_a_wrapped_staged_combined_evaluation_after_a_heading_is_refused():
+    # control: refused on 12705f8 only because the wrapped statement was not found at all
+    extraction = parse(HEAD + ROWS + "REASONS FOR DECISION\n\nThe evidence was reviewed.\n\n"
+                       "Your combined evaluation for\ncompensation is 20 percent until\nFebruary 28, 2026, and "
+                       "30 percent\nthereafter.\n")
+    assert not extraction.ok
+
+
+def test_a_wrapped_combined_statement_letter_audits(tmp_path):
+    letter = tmp_path / "wrapped.txt"
+    letter.write_text(HEAD + "DECISION\n\nService connection for right knee strain is granted with an evaluation of\n"
+                      "20 percent effective January 9, 2026.\n\nService connection for tinnitus is granted with an "
+                      "evaluation of 10 percent\neffective January 9, 2026. Your combined evaluation for\n"
+                      "compensation is 30 percent.\n", encoding="utf-8")
+    code, out, _ = main("audit", letter, "--case", "wrapped", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_OK and "NO DISCREPANCY FOUND" in out
