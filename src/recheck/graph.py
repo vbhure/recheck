@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import time
 from typing import Any, Sequence
 
 from strands.hooks import BeforeNodeCallEvent, HookProvider, HookRegistry
@@ -792,6 +793,36 @@ _STRANDS_TEMP_NAME = ".strands_" + "x" * 8 + ".tmp"
 _WINDOWS_MAX_PATH = 259
 
 
+class _SessionFiles(FileSessionManager):
+    """FileSessionManager whose session file reads and replacements are retried briefly.
+
+    On Windows a file another process has open cannot be replaced, and cannot
+    be opened while it is being replaced. case.json is read and written with
+    retries for exactly this (recheck.case); the session was not. Another
+    program holding multi_agent.json open for a moment - a `show`, a virus
+    scanner - made a resume fail part-way, and made `show` report that the
+    question could not be answered and must be re-audited with --fresh.
+    """
+
+    def _read_file(self, path: str) -> dict[str, Any]:
+        return _retry_sharing(lambda: FileSessionManager._read_file(self, path))
+
+    def _write_file(self, path: str, data: dict[str, Any]) -> None:
+        _retry_sharing(lambda: FileSessionManager._write_file(self, path, data))
+
+
+def _retry_sharing(operation):
+    """Run a file operation, retried for about a second while it is refused as in use."""
+    for attempt in range(40):
+        try:
+            return operation()
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.025)
+    raise AssertionError("unreachable")
+
+
 def deepest_session_path(store: CaseStore, case_id: str) -> str:
     """The longest path the graph writes for this case, as the OS will see it."""
     return os.path.join(
@@ -862,7 +893,7 @@ def build_graph(store: CaseStore, case_id: str, source: str, agent_factory: Agen
     builder.set_graph_id("recheck")
     builder.set_hook_providers([NodeTimeline(store, case_id)])
     builder.set_session_manager(
-        FileSessionManager(session_id=SESSION_ID, storage_dir=str(store.session_dir(case_id)))
+        _SessionFiles(session_id=SESSION_ID, storage_dir=str(store.session_dir(case_id)))
     )
     return builder.build()
 

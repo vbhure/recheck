@@ -11,6 +11,10 @@ Each test fails on 12705f8, the code before its fix.
   HITL-2  a case directory whose case.json was gone kept its Strands session, and
           a new audit or sweep continued that session: extract and classify never
           ran, and the letter was reported as computing 0%, exit 0.
+  HITL-4  on Windows, another program holding multi_agent.json open for a moment
+          made `show` report the question lost ("re-audit with --fresh") and made
+          a resume fail part-way: the session files, unlike case.json, were read
+          and replaced without a retry.
 
 (HITL-3, a fact volunteered for a 0% rating re-asking the question, was already
 fixed on integ and is covered by tests/test_rt_verify.py RG11-REFINED-ZERO.)
@@ -155,3 +159,41 @@ def test_an_audit_starts_at_extract_even_when_an_old_session_is_left_behind(tmp_
     assert nodes_run(CaseStore(store_root), "c")[:2] == ["extract", "classify"]
     assert case.stated_combined == 70 and case.ratings
     assert (code, case.status, case.recomputed_degree) == (EXIT_OK, "complete", 70), (out, err)
+
+
+# ==========================================================================
+# HITL-4: another program holding the session file for a moment
+# ==========================================================================
+
+def _held_briefly(path: pathlib.Path, seconds: float, *, share: int) -> None:
+    """Open `path` as another program would (a virus scanner, a `show`), and close it after `seconds`."""
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    handle = kernel32.CreateFileW(str(path), 0x80000000, share, None, 3, 0, None)  # GENERIC_READ, OPEN_EXISTING
+    assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+    threading.Timer(seconds, lambda: kernel32.CloseHandle(handle)).start()
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="sharing violations are a Windows behaviour")
+@pytest.mark.parametrize("command", ["show", "resume"])
+def test_a_session_file_held_open_for_a_moment_does_not_lose_or_fail_the_question(tmp_path, command):
+    store_root = tmp_path / "runs"
+    assert main("audit", MISSING_SIDES, "--case", "c", store=store_root)[0] == EXIT_AWAITING_HUMAN
+    (path,) = CaseStore(store_root).session_dir("c").rglob("multi_agent.json")
+
+    if command == "show":
+        _held_briefly(path, 0.3, share=0)  # nobody else may open it: a read is refused
+        code, out, err = main("show", "--case", "c", store=store_root)
+        assert (code, err) == (EXIT_OK, "")
+        assert "QUESTION FOR THE REVIEWER" in out and "CANNOT BE ANSWERED" not in out
+    else:
+        _held_briefly(path, 0.3, share=1)  # others may read it: replacing it is refused
+        code, out, err = main("resume", "--case", "c", "--answer", "1=left,2=right", store=store_root)
+        assert (code, err) == (EXIT_OK, "")
+        assert CaseStore(store_root).load("c").recomputed_degree == 80
