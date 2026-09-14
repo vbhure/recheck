@@ -83,13 +83,17 @@ def _scripted_factory(fixture: pathlib.Path | None):
     elif not fixture.is_file():
         # A mistyped path used to run as the empty fixture, and the reviewer
         # was told "the model output was invalid or incomplete" for every name
-        # the fixture would have answered.
-        raise ValueError(f"no such --classifications fixture: {fixture.as_posix()}")
+        # the fixture would have answered, while every report said its
+        # decisions were "replayed from a committed fixture (<that path>)".
+        raise ValueError(f"no such --classifications fixture: {_shown_path(fixture)}")
     else:
-        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(fixture.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"--classifications fixture {_shown_path(fixture)} could not be read: {exc}") from exc
         if not isinstance(payload, dict):
             # A list or a number here raised AttributeError below: a traceback, exit 1.
-            raise ValueError(f"{fixture.name}: a --classifications fixture must be a JSON object, "
+            raise ValueError(f"{_shown_path(fixture)}: a --classifications fixture must be a JSON object, "
                              f"not {type(payload).__name__}")
 
     anatomy = payload.get("anatomy")
@@ -97,11 +101,12 @@ def _scripted_factory(fixture: pathlib.Path | None):
         # A list here failed inside the model call ("the model call failed"),
         # and a confidence that is a list or null raised TypeError: a traceback.
         if not isinstance(anatomy, dict):
-            raise ValueError(f"{fixture.name}: \"anatomy\" must be a JSON object, not {type(anatomy).__name__}")
+            raise ValueError(f"{_shown_path(fixture)}: \"anatomy\" must be a JSON object, "
+                             f"not {type(anatomy).__name__}")
         try:
             confidence = float(payload.get("confidence", 0.9))
-        except TypeError as exc:
-            raise ValueError(f"{fixture.name}: \"confidence\" must be a number") from exc
+        except (TypeError, ValueError) as exc:  # a list, null, or text such as "high"
+            raise ValueError(f"{_shown_path(fixture)}: \"confidence\" must be a number") from exc
 
         def responder(_tool, messages):
             text = "".join(block.get("text", "") for block in messages[-1].get("content", []))
@@ -822,8 +827,9 @@ def _tolerant_output() -> None:
     A condition name holding a character outside it (a Unicode hyphen, a
     non-Latin-1 accent) raised UnicodeEncodeError while printing a finished
     report: exit 3 with only a codec message, for a case that was complete,
-    and `show` failed the same way. Recheck's own wording, figures and verdicts
-    are ASCII, so nothing the result rests on is changed.
+    and `show` failed the same way; a sweep whose file name held such a
+    character printed no triage at all. Recheck's own wording, figures and
+    verdicts are ASCII, so nothing the result rests on is changed.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
