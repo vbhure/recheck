@@ -109,7 +109,8 @@ Python 3.10 or later. No AWS account, no API key, no network.
 ```bash
 git clone <repository URL> recheck && cd recheck
 python -m venv .venv
-# Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
+# Windows cmd/PowerShell: .venv\Scripts\activate    Git Bash: source .venv/Scripts/activate    macOS/Linux: source .venv/bin/activate
+# (PowerShell refusing to run the script: Set-ExecutionPolicy -Scope Process Bypass, then activate)
 pip install -e ".[dev]"
 
 python tools/demo.py          # the whole story, zero cost (about 17 s here; longer on a busy machine)
