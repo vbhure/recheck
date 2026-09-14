@@ -6,6 +6,9 @@
          store - and left a .discarded-* link behind.
   CLI-5  A .txt letter saved as Windows-1252 ('ANSI') was refused with only the
          codec's message; it is still refused, and now says to save it as UTF-8.
+  HITL   Defence in depth: the assess node took the first interruptResponse in
+         its task, whatever interrupt it answered. It now takes only a response
+         to this case's own interrupt id.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import os
 import pathlib
 import stat
 
-from _support import EXIT_CANNOT_PROCEED, EXIT_OK, main, tabular_letter
+from _support import EXIT_AWAITING_HUMAN, EXIT_CANNOT_PROCEED, EXIT_OK, main, tabular_letter
 from recheck.case import CaseStore
 
 SETTLED = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20), ("Left knee strain", 10),
@@ -123,3 +126,52 @@ def test_control_the_same_letter_saved_as_utf8_is_read(tmp_path):
     letter.write_bytes(letter.read_bytes().decode("cp1252").encode("utf-8"))
     code, out, err = main("audit", letter, "--case", "utf8", "--brief", store=tmp_path / "runs")
     assert code == EXIT_OK and "DISCREPANCY" in out, out + err
+
+
+# --------------------------------------------------------------------------
+# HITL: the assess node reads only a response to this case's own interrupt
+# --------------------------------------------------------------------------
+
+# 60, 20 and 10 combine to 71 -> 70% without the factor; with the knee of
+# unstated side on the left, the pair of knees takes the factor: 80%.
+PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+        ("Limitation of motion of the knee", 10), ("Tinnitus", 10)]
+
+
+def _assess_with(store_root: pathlib.Path, case_id: str, interrupt: str, response):
+    import asyncio
+
+    from recheck.graph import AssessNode
+
+    task = [{"interruptResponse": {"interruptId": interrupt, "response": response}}]
+    return asyncio.run(AssessNode(CaseStore(store_root), case_id).invoke_async(task))
+
+
+def test_the_assess_node_ignores_a_response_to_another_interrupt(tmp_path):
+    from strands.multiagent.base import Status
+
+    from recheck.graph import interrupt_id
+
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "p.txt", PAIR, stated=70)
+    assert main("audit", letter, "--case", "p", store=store)[0] == EXIT_AWAITING_HUMAN
+    before = CaseStore(store).load("p")
+
+    for other in (interrupt_id("q"), "recheck:p:compute", "", None):
+        result = _assess_with(store, "p", other, {"2": "left"})
+        case = CaseStore(store).load("p")
+        assert result.status == Status.INTERRUPTED, other
+        assert [i.id for i in result.interrupts] == [interrupt_id("p")], other
+        assert case.status == "awaiting_human" and case.human_answers == {}, (other, case.status, case.human_answers)
+        assert case.possible_degrees == before.possible_degrees
+
+
+def test_control_the_assess_node_takes_a_response_to_its_own_interrupt(tmp_path):
+    from recheck.graph import interrupt_id
+
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "p.txt", PAIR, stated=70)
+    assert main("audit", letter, "--case", "p", store=store)[0] == EXIT_AWAITING_HUMAN
+    _assess_with(store, "p", interrupt_id("p"), {"2": "left"})
+    case = CaseStore(store).load("p")
+    assert case.status == "ready" and case.human_answers == {"2": "lower-left"}

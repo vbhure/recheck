@@ -339,7 +339,7 @@ class AssessNode(MultiAgentBase):
         case = self.store.load(self.case_id)
         decisions = case.load_decisions()
         trace = case.load_trace()
-        response = _interrupt_response(task)
+        response = _interrupt_response(task, interrupt_id(self.case_id))
 
         if response is None:
             return self._first_pass(case, decisions, trace)
@@ -755,11 +755,21 @@ def parse_answers(
     return answers, problems
 
 
-def _interrupt_response(task: Any) -> Any | None:
+def _interrupt_response(task: Any, expected_id: str) -> Any | None:
+    """The response to this case's own interrupt, if the task carries one.
+
+    Strands hands a node the responses whose ids its session context lists
+    for that node, and outstanding_interrupt checks those ids before a resume.
+    This node checks again for itself, as the compute node checks the status:
+    a response to any other interrupt - another case's, or one a session was
+    edited to route here - is not an answer to this case's question, and the
+    question is asked again instead.
+    """
     if isinstance(task, list):
         for block in task:
-            if isinstance(block, dict) and "interruptResponse" in block:
-                return block["interruptResponse"].get("response")
+            content = block.get("interruptResponse") if isinstance(block, dict) else None
+            if isinstance(content, dict) and content.get("interruptId") == expected_id:
+                return content.get("response")
     return None
 
 
