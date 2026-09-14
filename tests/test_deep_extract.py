@@ -173,6 +173,35 @@ def test_a_staged_combined_evaluation_after_a_heading_is_refused(heading, statem
     assert extraction.ratings == []
 
 
+@pytest.mark.parametrize("heading", ["REASONS FOR DECISION", "EVIDENCE"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # the same staged sentence, with an abbreviated month or a semicolon: the tail's sentence split broke
+        # it at "Feb." or ";" and the second stage was in another "sentence" (still read as 20% on 6b317f7)
+        "Your combined evaluation for compensation is 20 percent until Feb. 28, 2026, and 30 percent thereafter.",
+        "Your combined evaluation for compensation is 20 percent effective Jan. 9, 2026, and 30 percent "
+        "effective Mar. 1, 2026.",
+        "Your combined evaluation for compensation is 20 percent until February 28, 2026; and 30 percent "
+        "thereafter.",
+    ],
+)
+def test_a_staged_combined_evaluation_with_an_abbreviation_or_semicolon_is_refused(heading, statement):
+    extraction = parse(HEAD + ROWS + f"{heading}\n\nThe evidence was reviewed.\n\n{statement}\n")
+    assert not extraction.ok
+    assert extraction.stated_combined is None
+
+
+def test_the_audit_does_not_report_a_discrepancy_against_an_abbreviated_ended_stage(tmp_path):
+    letter = tmp_path / "staged.txt"
+    letter.write_text(HEAD + ROWS + "REASONS FOR DECISION\n\nThe evidence was reviewed.\n\n"
+                      "Your combined evaluation for compensation is 20 percent until Feb. 28, 2026,\n"
+                      "and 30 percent thereafter.\n", encoding="utf-8")
+    code, out, _ = main("audit", letter, "--case", "staged", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert code == EXIT_CANNOT_PROCEED
+
+
 def test_a_single_combined_evaluation_after_a_heading_is_still_read():
     # control
     extraction = parse(HEAD + ROWS + "REASONS FOR DECISION\n\nA 30 percent evaluation requires more.\n\n"

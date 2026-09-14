@@ -1015,8 +1015,11 @@ def parse(text: str) -> Extraction:
     # February 28, 2026, and 30 percent thereafter" was read as 20 percent.
     # Sentences are split within paragraphs, not by _sentences: its line
     # grouping broke that statement at "until\nFebruary 28" and hid the stage.
+    # A sentence ends only at a period before a capital: splitting at every
+    # period or semicolon hid the stage again in "until Feb. 28, 2026, and 30
+    # percent thereafter" and "until February 28, 2026; and 30 percent".
     for paragraph in re.split(r"\n[^\S\n]*\n", tail):
-        for sentence in re.split(r"(?<=[.;])\s+", " ".join(paragraph.split())):
+        for sentence in re.split(r"(?<=\.)\s+(?=[A-Z])", " ".join(paragraph.split())):
             marks = _combined_marks(sentence)
             if marks and _unaccounted(sentence, marks) is not None:
                 return _refuse(result, (
