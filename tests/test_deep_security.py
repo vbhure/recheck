@@ -62,3 +62,57 @@ def test_the_rewritten_patterns_read_ordinary_letters_as_before():
 
     cut = parse(TABLE + "\nREASONS FOR DECISION:\n  2. Left knee strain ........ 20%\n")
     assert not cut.ok and "REASONS FOR DECISION" in cut.unparsed_reason
+
+
+# --------------------------------------------------------------------------
+# SEC-2: a case.json that JSON cannot decode is corrupt, not a crash
+# --------------------------------------------------------------------------
+
+UNDECODABLE = {
+    "nested arrays": lambda good: good.replace(b'"ratings": [', b'"ratings": [' + b"[" * 100_000 + b"]" * 100_000
+                                                + b",", 1),
+    "not UTF-8": lambda good: good.replace(b'"c1"', b'"c1\xff"', 1),
+    "a 5,000-digit number": lambda good: good.replace(b'"stated_combined": 70', b'"stated_combined": '
+                                                       + b"7" * 5000, 1),
+}
+
+
+@pytest.mark.parametrize("kind", list(UNDECODABLE))
+@pytest.mark.parametrize("command", ["show", "resume"])
+def test_an_undecodable_case_file_is_refused_with_exit_3(tmp_path, kind, command):
+    from _support import EXIT_AWAITING_HUMAN, EXIT_CANNOT_PROCEED, main, tabular_letter
+
+    store = tmp_path / "runs"
+    letter = tabular_letter(tmp_path / "pair.txt", [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+                                                    ("Limitation of motion of the knee", 10), ("Tinnitus", 10)],
+                            stated=70)
+    code, out, err = main("audit", letter, "--case", "c1", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    path = store / "c1" / "case.json"
+    path.write_bytes(UNDECODABLE[kind](path.read_bytes()))
+
+    args = ["--case", "c1"] + (["--answer", "2=left"] if command == "resume" else [])
+    code, out, err = main(command, *args, store=store)
+    assert code == EXIT_CANNOT_PROCEED, out + err
+    assert "cannot be read as JSON" in err
+
+
+@pytest.mark.parametrize("kind", list(UNDECODABLE))
+def test_sweep_fresh_re_audits_an_undecodable_case_file(tmp_path, kind):
+    from _support import EXIT_AWAITING_HUMAN, EXIT_CANNOT_PROCEED, main, tabular_letter
+
+    store, letters = tmp_path / "runs", tmp_path / "letters"
+    tabular_letter(letters / "c1.txt", [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
+                                        ("Limitation of motion of the knee", 10), ("Tinnitus", 10)], stated=70)
+    code, out, err = main("sweep", letters, store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    path = store / "c1" / "case.json"
+    path.write_bytes(UNDECODABLE[kind](path.read_bytes()))
+
+    code, out, _ = main("sweep", letters, store=store)
+    assert code == EXIT_CANNOT_PROCEED and "Nothing was deleted; re-audit with --fresh" in " ".join(out.split())
+    # --fresh discards only a case it calls corrupt. A RecursionError or a
+    # UnicodeDecodeError was not called that, so it could never be re-audited.
+    code, out, err = main("sweep", letters, "--fresh", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    assert "NEEDS YOUR ANSWER" in out

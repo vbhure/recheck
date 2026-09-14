@@ -409,6 +409,12 @@ class CaseStore:
             raw = json.loads(_read_with_retry(path))
         except json.JSONDecodeError as exc:
             raise CaseCorrupt(f"case {case_id} is not valid JSON: {exc}") from exc
+        except (ValueError, RecursionError) as exc:
+            # Not UTF-8, a number too long to convert, or arrays nested too
+            # deeply to decode. Raised as themselves, `show` and `resume`
+            # ended in a traceback, and a sweep could not discard the case
+            # even with --fresh, which acts only on a case it calls corrupt.
+            raise CaseCorrupt(f"case {case_id} cannot be read as JSON ({type(exc).__name__})") from exc
         if not isinstance(raw, dict):
             raise CaseCorrupt(f"case {case_id} is not a JSON object")
         version = raw.get("schema_version")
