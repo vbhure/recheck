@@ -201,18 +201,18 @@ def evaluate_established(decisions: Sequence[Decision], *, both_in_factor: bool 
 
 @functools.lru_cache(maxsize=1 << 16)
 def _run(ratings: tuple[int, ...], paired: tuple[tuple[int, str, str], ...],
-         reading: bool) -> tuple[int, bool, int | None]:
-    """One engine run, keyed by the multisets that decide it: (final degree, `_account`).
+         reading: bool) -> tuple[int, tuple[bool, int | None], tuple[int, bool]]:
+    """One engine run, keyed by the multisets that decide it: (final degree, `_account`, `_figures`).
 
     The final degree depends on which ratings there are and which of them
     are paired, not on their order, so completions that differ only in which
     of two identical evaluations is on which side share one run. The cache
     also serves the repeat assessments of one letter in one process (the
     assess node, then compute, then the printed question), and the report's
-    check of what every completion says about 4.26(d).
+    check of what every completion says about 4.26(d) and the factor.
     """
     evaluation = evaluate(list(ratings), paired=[Paired(*p) for p in paired], lone_both_in_factor=reading)
-    return (evaluation.final_degree, *_account(evaluation))
+    return evaluation.final_degree, _account(evaluation), _figures(evaluation)
 
 
 def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict[int, tuple[str, str]]]:
@@ -243,6 +243,13 @@ def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict
     possibility says about 4.26(d); otherwise a completion is. Where the
     possibilities themselves differ, one in which 4.26(d) decides is shown,
     so the reader is still told to check the decision period.
+
+    Nor is it the same arithmetic. With a left elbow 10, bilateral plantar
+    fasciitis 10 and a knee 10 of unstated side, the established facts keep
+    the lone both-sides rating out of the factor: combined value 27, "factor
+    not applied". Wherever the knee is, it joins the factor: 29, applied. So
+    the established facts are also shown only when their combined value and
+    factor are those of some possibility.
     """
     established = evaluate_established(decisions)
     m = assess(decisions)
@@ -255,8 +262,10 @@ def evaluate_for_report(decisions: Sequence[Decision]) -> tuple[Evaluation, dict
             completed[index] = dataclasses.replace(decisions[index], extremity_group=group, laterality=side)
         completions.append((answers, completed))
     ratings = tuple(sorted(d.percent for d in decisions))
-    accounts = {_run(ratings, *key)[1:] for _, completed in completions for key in _engine_keys(completed)}
-    if established.final_degree == m.possible[0] and accounts == {_account(established)}:
+    runs = [_run(ratings, *key) for _, completed in completions for key in _engine_keys(completed)]
+    accounts = {account for _, account, _ in runs}
+    if (established.final_degree == m.possible[0] and accounts == {_account(established)}
+            and _figures(established) in {figures for _, _, figures in runs}):
         return established, {}
     answers, completed = completions[0]
     if len(accounts) > 1:
@@ -269,6 +278,11 @@ def _account(evaluation: Evaluation) -> tuple[bool, int | None]:
     """What a report says about 4.26(d): whether it decides the result, and the prior rule's figure."""
     decided = bool(evaluation.excluded_under_426d)
     return decided, evaluation.alternative_final_degree if decided else None
+
+
+def _figures(evaluation: Evaluation) -> tuple[int, bool]:
+    """What a report's arithmetic rests on besides 4.26(d): the combined value, and whether the factor applies."""
+    return evaluation.combined_value, evaluation.bilateral_applied
 
 
 def _engine_keys(decisions: Sequence[Decision]) -> list[tuple[tuple[tuple[int, str, str], ...], bool]]:
