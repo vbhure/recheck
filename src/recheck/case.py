@@ -335,7 +335,7 @@ class CaseStore:
         inside the renamed directory cannot bring it back.
         """
         directory = self.dir_for(case_id)
-        if not directory.exists():
+        if not os.path.lexists(directory):  # a link whose target is gone is still removed
             return
         trash = self.root / f".discarded-{directory.name}-{uuid.uuid4().hex[:12]}"
         os.replace(directory, trash)
@@ -971,17 +971,47 @@ def _read_with_retry(path: pathlib.Path) -> str:
     raise AssertionError("unreachable")
 
 
+def _remove_link(path: str | os.PathLike) -> None:
+    """Remove a link itself, never what it points to."""
+    with contextlib.suppress(OSError):
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)  # a directory link on Windows: removes the link, not its target
+
+
 def _remove_tree(path: pathlib.Path) -> None:
-    """Best-effort removal of a discarded case; read-only files are made writable first."""
+    """Best-effort removal of a discarded case; read-only files are made writable first.
+
+    A link - a symbolic link or a Windows junction, detected as _read_tree
+    detects one (_is_link: Python 3.10 has no os.path.isjunction) - is removed
+    itself and never entered. A case directory that was a junction made
+    shutil.rmtree refuse it, and the fallback below then walked through the
+    link clearing the read-only attribute of every file it pointed to,
+    outside the store, and left the renamed link behind.
+    """
+    if _is_link(path):
+        _remove_link(path)
+        return
     try:
         shutil.rmtree(path)
         return
     except OSError:
         pass
-    for root, dirs, files in os.walk(path):
-        for name in dirs + files:
+    pending = [path]
+    while pending:
+        try:
+            entries = list(os.scandir(pending.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            if _is_link(pathlib.Path(entry.path)):
+                _remove_link(entry.path)
+                continue
             with contextlib.suppress(OSError):
-                os.chmod(os.path.join(root, name), stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                os.chmod(entry.path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(entry.path)
     shutil.rmtree(path, ignore_errors=True)
 
 
