@@ -85,7 +85,7 @@
   <text x="412" y="281" font-size="15" font-weight="700" fill="#1a1f27">classify</text>
   <rect x="631" y="265" width="153" height="22" rx="11" fill="#b26a00"/>
   <text x="707.5" y="281" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">AI only for the gap</text>
-  <text x="412" y="301" font-size="13" fill="#2b3340"><tspan font-weight="700">extremity group:</tspan> deterministic lexicon first;<tspan x="412" dy="17">one Strands Agent structured-output call for</tspan><tspan x="412" dy="17">names the lexicon abstains on</tspan></text>
+  <text x="412" y="301" font-size="13" fill="#2b3340"><tspan font-weight="700">extremity group:</tspan> deterministic lexicon first;<tspan x="412" dy="17">at most one Strands Agent structured-output</tspan><tspan x="412" dy="17">call for names the lexicon abstains on</tspan></text>
   <rect x="408" y="347" width="376" height="49" rx="6" fill="#e8f0fb" stroke="#1f5fbf" stroke-width="1.4"/>
   <text x="420" y="366" font-size="13" fill="#2b3340"><tspan font-weight="700">sides:</tspan> read from the letter by deterministic<tspan x="420" dy="18">code - the model has no field for a side</tspan></text>
 
