@@ -80,6 +80,12 @@ lives in the case's Strands session. A different process answers it:
     out = run("sweep", "fixtures/caseload", "--scripted", "--classifications", f"{FIXTURES}/caseload.json",
               expect=2)
     assert "case_019" in out
+    say("""
+case_019 moved from NEEDS YOUR ANSWER to POTENTIAL DISCREPANCY (stated 60%,
+recomputed 70%). Nothing was re-audited: a sweep reports each case as it stands,
+so it is also the caseload's status view. The --fresh note is not an error; it
+only says what re-auditing would discard.
+""")
 
 
 def part_letter() -> None:
