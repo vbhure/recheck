@@ -113,7 +113,7 @@ python -m venv .venv
 # (PowerShell refusing to run the script: Set-ExecutionPolicy -Scope Process Bypass, then activate)
 pip install -e ".[dev]"
 
-python tools/demo.py          # the whole story, zero cost (about 17 s here; longer on a busy machine)
+python tools/demo.py          # the whole story, zero cost (33 s to 3 min on the Windows test machine, depending on load)
 ```
 
 Or drive it yourself:
@@ -183,7 +183,7 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 
 ## Verification
 
-- **1,800 tests**: 686 of them the Table I file (every published cell), 1,114 behavioural. Of those, 421 are the red team's regression tests (`tests/test_rt_*.py`) and 248 the deep review's (`tests/test_deep_*.py` and `tests/test_rc2_fixes.py`). `pytest` runs them in a few minutes.
+- **1,800 tests**: 686 of them the Table I file (every published cell), 1,114 behavioural. Of those, 421 are the red team's regression tests (`tests/test_rt_*.py`) and 248 the deep review's (`tests/test_deep_*.py` and `tests/test_rc2_fixes.py`). `pytest` runs them in several minutes (4 to 8 on the Windows test machine while other runs loaded it).
 - **Regression tests for every code defect fixed**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), an adversarial red team (53 findings, two rounds of fixes, then a final regression pass over where the fixes met), and a deep review of the release candidate in nine areas, with an independent verifier re-attacking the fixes in seven of them. Its mutation run broke safety checks 106 ways; the suite caught 97 of the 105 that change behaviour, and the 8 survivors now have tests. The defects, fixes, measurements and known residuals are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
 - **Hand-derived expectations** for eight caseload letters that each pin one behaviour (three leg disabilities, four extremities, a linked clause, an immaterial unknown, a material question, an unlisted term, a lower recomputation, clinical names with no side) — [fixtures/caseload/EXPECTED.md](fixtures/caseload/EXPECTED.md).
 - **Clean clone:** before the deep review, install, the full suite, the demo and every command in this README were run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. On the final code, the full suite (1,798 passed, 2 skipped) and the demo were run again on Windows with Python 3.12 and 3.10, in installed environments. A few tests skip themselves: two Anthropic-adapter tests without the optional `anthropic` extra, three that need Windows, and two that need a case-insensitive filesystem.
