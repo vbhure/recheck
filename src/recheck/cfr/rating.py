@@ -265,8 +265,10 @@ def evaluate(
         result, so a reader can see what 4.26 changed.
 
     Raises:
-        ValueError: If the paired disabilities are not a sub-multiset of
-            `ratings`, if both arguments are given, or if there are more arm
+        ValueError: If a rating is not a whole percentage from 0 to 100, if
+            a paired disability is not an upper or lower extremity with a
+            left, right or both side, if the paired disabilities are not a
+            sub-multiset of `ratings`, if both arguments are given, or if there are more arm
             and leg disabilities than the 4.26(d) search is verified for.
     """
     ratings = [_percentage(r) for r in ratings]
