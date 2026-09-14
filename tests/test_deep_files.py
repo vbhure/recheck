@@ -250,3 +250,28 @@ def test_control_utf16_without_a_byte_order_mark_is_still_refused(tmp_path):
     path.write_bytes(TABULAR.encode("utf-16-le"))
     code, out, err = main("audit", path, "--case", "u16", "--brief", store=tmp_path / "runs")
     assert code == EXIT_CANNOT_PROCEED and "DISCREPANCY" not in out and "recomputed" not in out
+
+
+# --------------------------------------------------------------------------
+# FILES-5: output redirected in a legacy encoding
+# --------------------------------------------------------------------------
+
+def test_a_finished_report_prints_through_an_encoding_that_lacks_a_character_in_it(tmp_path):
+    """Before: exit 3, "[recheck] 'charmap' codec can't encode character
+    '\\u2010'", with the case complete and no report printed."""
+    path = tmp_path / "letter.txt"
+    path.write_text(TABULAR.replace("right knee (DC", "right knee‐joint (DC"), encoding="utf-8")
+    store = tmp_path / "runs"
+    for args in (("audit", path, "--case", "hy", "--brief"), ("show", "--case", "hy", "--brief")):
+        raw = io.BytesIO()
+        stdout = io.TextIOWrapper(raw, encoding="cp1252", newline="")
+        err = io.StringIO()
+        from recheck.cli import main as cli_main
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(err):
+            code = cli_main(["--store", str(store), *map(str, args)])
+        stdout.flush()
+        out = raw.getvalue().decode("cp1252")
+        assert code == EXIT_OK, err.getvalue()
+        assert "POTENTIAL DISCREPANCY" in out and "knee\\u2010joint" in out
+    assert case_json(store, "hy")["status"] == "complete"
