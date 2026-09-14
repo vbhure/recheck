@@ -70,9 +70,10 @@ letters settle, and brings back only questions whose answer changes a rating.
 Three questions out of 24 letters. One more letter left a side unstated, but no
 answer could change its rating, so nobody was asked.
 
-case_019: the classifier had no answer for "left Lisfranc injury", so Recheck
-did not guess whether it is an arm or a leg. That process has exited; the
-question lives in the case's Strands session. A different process answers it:
+case_019: the classifier fixture does not list "left Lisfranc injury", so its
+answer came back at confidence 0 and the floor refused it. Recheck did not
+guess whether it is an arm or a leg. That process has exited; the question
+lives in the case's Strands session. A different process answers it:
 """)
     run("resume", "--case", "case_019", "--answer", "2=lower", "--brief", expect=0)
     say("One word from the reviewer. Deterministic code did the rest. Sweep again:")
@@ -119,17 +120,19 @@ for the missing fact instead of treating "unknown" as "not an arm":
 def closing() -> None:
     banner("WHAT JUST HAPPENED")
     say("""
-DETERMINISTIC  read every evaluation and side, recognised the rating schedule's
-               own anatomy, decided which unknown facts could change a rating,
-               and did all 38 CFR 4.25 / 4.26 arithmetic (Table I verified
-               against all 684 published cells).
+DETERMINISTIC  read every evaluation and every side a letter states,
+               recognised the rating schedule's own anatomy, decided which
+               unknown facts could change a rating, and did all 38 CFR 4.25 /
+               4.26 arithmetic (Table I verified against all 684 published
+               cells).
 AI             named the extremity group only for names outside that
                vocabulary - replayed from fixtures in this demo - and could not
                express a side, a number, or free text.
 HUMAN          supplied facts only when an answer changed a rating.
 
 No network, no credential, no inference cost. A live provider replaces the
-fixture with one flag (--model); see recheck preflight.
+fixture with --model once its SDK and credentials are set up; recheck preflight
+--model <provider> checks that without an inference call.
 """)
 
 
