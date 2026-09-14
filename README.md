@@ -84,7 +84,7 @@ A difference is reported as **POTENTIAL DISCREPANCY — HUMAN REVIEW RECOMMENDED
 
 Rating calculators exist. What a representative lacks is something that works through the stack without them and interrupts only when their judgment is needed.
 
-- **It works in the background.** `sweep` audits a folder unattended. Running it again reports each case as it stands, so the sweep is also the caseload's status view.
+- **It works unattended.** `sweep` audits a folder unattended. Running it again reports each case as it stands, so the sweep is also the caseload's status view.
 - **It decides when a person is needed — deterministically.** Materiality separates "the letter didn't say which knee" (usually irrelevant) from "the letter didn't say which knee, and that decides between 60% and 70%".
 - **Its questions survive the process.** Each letter is its own Strands graph with its own persisted session. A question raised on Monday is answered on Wednesday by a different process, and the report shows which process ran each step.
 - **The model is confined to one judgment**, and nothing it says is used unchecked.
