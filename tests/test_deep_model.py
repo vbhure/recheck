@@ -127,6 +127,53 @@ def test_a_nan_budget_never_reaches_the_classifier(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# MODEL-3: the Ollama model was built without the output cap it describes
+# --------------------------------------------------------------------------
+
+def test_the_ollama_model_is_built_with_the_output_cap_it_describes(monkeypatch):
+    seen: dict = {}
+
+    class _Recorder:
+        def __init__(self, host=None, **kwargs):
+            seen.update(kwargs, host=host)
+
+    class _Stub:
+        OllamaModel = _Recorder
+
+    real = importlib.import_module
+    monkeypatch.setattr(importlib, "import_module",
+                        lambda name, *a: _Stub if name == "strands.models.ollama" else real(name, *a))
+    config = load_config("ollama", env={"RECHECK_MAX_TOKENS": "1234"})
+    assert "max_tokens 1234" in config.describe()
+    build_model(config)
+    assert seen.get("max_tokens") == 1234, f"built with {seen}"
+
+
+@pytest.fixture
+def strands_ollama_importable(monkeypatch):
+    """strands.models.ollama importable even where the ollama SDK is not
+    installed. A stub module stands in for the SDK; nothing is contacted."""
+    had = "strands.models.ollama" in sys.modules
+    if importlib.util.find_spec("ollama") is None:
+        monkeypatch.setitem(sys.modules, "ollama", types.ModuleType("ollama"))
+    try:
+        yield
+    finally:
+        if not had:
+            sys.modules.pop("strands.models.ollama", None)
+            package = sys.modules.get("strands.models")
+            if package is not None and "ollama" in vars(package):
+                delattr(package, "ollama")
+
+
+def test_the_ollama_request_carries_num_predict(strands_ollama_importable):
+    model = build_model(load_config("ollama", env={}))
+    request = model.format_request([{"role": "user", "content": [{"text": "Classify"}]}],
+                                   [convert_pydantic_to_tool_spec(ClassificationBatch)], "system")
+    assert request["options"].get("num_predict") == factory_module.DEFAULT_MAX_TOKENS
+
+
+# --------------------------------------------------------------------------
 # MODEL-4: audit --fresh discarded the case before the classifier was resolved
 # --------------------------------------------------------------------------
 

@@ -521,8 +521,11 @@ def build_model(config: ProviderConfig) -> Any:
             params={"temperature": config.temperature},
         )
     if config.provider == "ollama":
+        # max_tokens becomes Ollama's num_predict. Without it the request
+        # carried no output cap at all, while describe() and every live run
+        # printed "max_tokens 4096".
         return cls(host=config.host, model_id=config.model_id, temperature=config.temperature,
-                   ollama_client_args={"timeout": config.timeout_s})
+                   max_tokens=config.max_tokens, ollama_client_args={"timeout": config.timeout_s})
     raise ProviderNotConfigured(f"no constructor mapping for {config.provider!r}")
 
 
