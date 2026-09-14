@@ -497,6 +497,7 @@ class CaseStore:
         if any(not 0 <= i < len(decisions) for i in case.immaterial_unknowns):
             raise CaseCorrupt(f"case {case_id} lists an unknown fact for a condition it does not have")
         _check_as_read(case_id, case, decisions)
+        _check_provenance(case_id, case, decisions)
         _check_result(case_id, case, decisions)
         return case
 
@@ -537,6 +538,71 @@ def _check_as_read(case_id: str, case: Case, decisions: list[Decision]) -> None:
     ] != facts:
         raise CaseCorrupt(f"case {case_id} has conditions or evaluations that differ from the ratings extracted "
                           f"from its letter")
+
+
+def _check_provenance(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """Every fact must be one its recorded owner could have established.
+
+    _check_result re-derives a figure from the stored facts, so the facts are
+    what a tamper changes - and who established them is what the report
+    prints beside them. An open question edited to give the knee of unstated
+    side "left", attributed to the letter, and marked "ready" was finished by
+    `resume` with no answer: POTENTIAL DISCREPANCY, 80%, "Applying 38 CFR 4.25
+    and 4.26 to the evaluations as printed", exit 0, and "side: left
+    [letter]" for a name that states no side.
+
+    Deterministic code owns the side a name states and the lexicon's group,
+    and both are functions of the name, so they are read again here rather
+    than trusted. A fact attributed to the reviewer must be the answer on
+    file; one attributed to the model must be for a name the lexicon does not
+    recognise, sendable to the model, and pass the confidence floor and the
+    veto. What a model said cannot be checked after the fact, and a file
+    edited to name a different condition is a consistent report of false
+    facts (see _check_result).
+    """
+    from recheck.classify import _letters_outside_latin1, _markers_in, _unsendable, derive_laterality
+    from recheck.extract.deterministic import _classify_extremity
+    from recheck.schema import CONFIDENCE_FLOOR
+
+    for key in case.human_answers:
+        if int(key) >= len(decisions):
+            raise CaseCorrupt(f"case {case_id} has an answer for condition {key[:12]}, which it does not have")
+    for index, d in enumerate(decisions):
+        lexicon = _classify_extremity(d.condition)
+        stated = derive_laterality(d.condition)
+        answer = case.human_answers.get(str(index))
+        problem = None
+        if (d.extremity_group == "unknown") != (d.group_by is None):
+            problem = f"extremity group {d.extremity_group!r} established by {_actor_name(d.group_by)}"
+        elif (d.laterality == "unknown") != (d.side_by is None):
+            problem = f"side {d.laterality!r} established by {_actor_name(d.side_by)}"
+        elif lexicon != "unrecognised" and (d.extremity_group, d.group_by) != (lexicon, Actor.DETERMINISTIC):
+            problem = f"extremity group {d.extremity_group!r} for a name the lexicon reads as {lexicon!r}"
+        elif lexicon == "unrecognised" and d.group_by is Actor.DETERMINISTIC:
+            problem = "extremity group attributed to the lexicon, which does not recognise the name"
+        elif d.group_by is Actor.AI and (
+            d.confidence is None or d.confidence < CONFIDENCE_FLOOR
+            or _unsendable(d.condition) is not None
+            or (d.extremity_group == "none" and (_markers_in(d.condition) or _letters_outside_latin1(d.condition)))
+        ):
+            problem = "extremity group attributed to a model classification Recheck would not have used"
+        elif d.side_by is Actor.AI:
+            problem = "side attributed to a model, which never establishes one"
+        elif stated != "unknown" and d.laterality != stated and not (d.extremity_group == "none"
+                                                                    and d.laterality == "unknown"):
+            problem = f"side {d.laterality!r} for a name that states {stated!r}"
+        elif stated == "unknown" and d.side_by is Actor.DETERMINISTIC:
+            problem = f"side {d.laterality!r} attributed to the letter, which does not state one for this name"
+        elif Actor.HUMAN in (d.group_by, d.side_by) and answer is None:
+            problem = "a fact attributed to the reviewer, with no answer on file"
+        elif answer is not None and answer != f"{d.extremity_group}-{d.laterality}":
+            problem = f"an answer on file ({answer[:40]!r}) that is not its extremity group and side"
+        if problem:
+            raise CaseCorrupt(f"case {case_id} decision [{index}] has {problem}")
+
+
+def _actor_name(actor: Actor | None) -> str:
+    return actor.value if actor else "nobody"
 
 
 #: The trace action the compute node records when 4.26(d) decides a result.
