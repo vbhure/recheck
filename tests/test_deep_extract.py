@@ -141,3 +141,51 @@ def test_a_stray_right_does_not_put_a_left_hip_in_the_bilateral_factor(tmp_path)
     assert "side: both" not in out
     assert "POTENTIAL DISCREPANCY" not in out
     assert code != EXIT_OK or "NO DISCREPANCY FOUND" in out
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-3: a staged combined evaluation after a stop heading was read as
+# its first stage. The decision section refuses a second percentage in the
+# combined statement; the same sentence after REASONS FOR DECISION reported
+# the stage that had ended as the value under review, with a POTENTIAL
+# DISCREPANCY at exit 0.
+# --------------------------------------------------------------------------
+
+ROWS = ("                RATING DECISION\n\n"
+        "  1. Limitation of flexion, right knee (DC 5260) ........ 20%\n"
+        "  2. Tinnitus (DC 6260) ................................. 10%\n\n")
+
+
+@pytest.mark.parametrize("heading", ["REASONS FOR DECISION", "EVIDENCE"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Your combined evaluation for compensation is 20 percent until February 28, 2026,\nand 30 percent thereafter.",
+        "Your combined evaluation for compensation is 20 percent until\nFebruary 28, 2026, and 30 percent\nthereafter.",
+        "Your combined evaluation for compensation is 20 percent from January 1, 2026, and 30 percent from "
+        "March 1, 2026.",
+        "COMBINED EVALUATION FOR COMPENSATION: 20% (30% from March 1, 2026)",
+    ],
+)
+def test_a_staged_combined_evaluation_after_a_heading_is_refused(heading, statement):
+    extraction = parse(HEAD + ROWS + f"{heading}\n\nThe evidence was reviewed.\n\n{statement}\n")
+    assert not extraction.ok
+    assert extraction.ratings == []
+
+
+def test_a_single_combined_evaluation_after_a_heading_is_still_read():
+    # control
+    extraction = parse(HEAD + ROWS + "REASONS FOR DECISION\n\nA 30 percent evaluation requires more.\n\n"
+                       "Your combined evaluation for compensation is 30 percent. Your previous combined "
+                       "evaluation for compensation is 20 percent.\n")
+    assert extraction.ok and extraction.stated_combined == 30
+
+
+def test_the_audit_does_not_report_a_discrepancy_against_an_ended_stage(tmp_path):
+    letter = tmp_path / "staged.txt"
+    letter.write_text(HEAD + ROWS + "REASONS FOR DECISION\n\nThe evidence was reviewed.\n\n"
+                      "Your combined evaluation for compensation is 20 percent until February 28, 2026,\n"
+                      "and 30 percent thereafter.\n", encoding="utf-8")
+    code, out, _ = main("audit", letter, "--case", "staged", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert code == EXIT_CANNOT_PROCEED

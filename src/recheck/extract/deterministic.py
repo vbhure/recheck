@@ -977,6 +977,20 @@ def parse(text: str) -> Extraction:
             f"the letter states more than one combined evaluation ({', '.join(f'{v}%' for v in sorted(stated))}); "
             f"refusing rather than choosing which one is under review"
         ))
+    # The decision section refuses a combined statement that carries a second
+    # percentage; after a stop heading nothing did, and "is 20 percent until
+    # February 28, 2026, and 30 percent thereafter" was read as 20 percent.
+    # Sentences are split within paragraphs, not by _sentences: its line
+    # grouping broke that statement at "until\nFebruary 28" and hid the stage.
+    for paragraph in re.split(r"\n[^\S\n]*\n", tail):
+        for sentence in re.split(r"(?<=[.;])\s+", " ".join(paragraph.split())):
+            marks = _combined_marks(sentence)
+            if marks and _unaccounted(sentence, marks) is not None:
+                return _refuse(result, (
+                    f"the combined evaluation statement after the {heading!r} heading holds more than one "
+                    f"percentage (a staged combined evaluation?); refusing rather than choosing which one is "
+                    f"under review"
+                ))
     result.stated_combined = next(iter(stated), None)
     if result.stated_combined is not None and result.stated_combined > 100:
         return _refuse(result, f"a combined evaluation of {result.stated_combined}% was read, but no combined "
