@@ -45,7 +45,7 @@ def _prose_letter(path, sentences, stated):
         ("Carpal tunnel syndrome, left wrist, right handed", "upper", "left"),
         ("Carpal tunnel syndrome, left wrist, right hand is dominant", "upper", "left"),
         # a limb word beside a non-extremity condition, joined in wording no pattern lists
-        ("Obstructive sleep apnea, onset after right knee injury", "unrecognised", "right"),
+        ("Obstructive sleep apnea, onset after right knee injury", "unrecognised", "unknown"),  # side: EXTRACT-7
         ("Post-traumatic stress disorder with right hand tremor", "unrecognised", "right"),
         # controls, unchanged: the listed forms, and a side that IS the rated condition's
         ("Left knee strain, secondary to right knee strain", "lower", "left"),
@@ -306,3 +306,42 @@ def test_a_noncompensable_stage_and_a_later_increase_are_refused_as_a_repeat():
                        "Evaluation of left knee strain is increased to 10 percent effective March 1, 2026.\n\n"
                        "Your combined evaluation for compensation is 10 percent.\n")
     assert not extraction.ok
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-7: a non-extremity condition the lexicon has no hint for, linked
+# to a limb in wording no pattern lists ("Scar, abdomen, onset after right
+# knee injury"), was read as a right leg disability, entered the 4.26 factor,
+# and a false POTENTIAL DISCREPANCY was reported at exit 0. A fact that only
+# the text after an opening word (by, after, since, subsequent to, from)
+# supplies is no longer taken from the name.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "condition,group,side",
+    [
+        ("Scar, abdomen, onset after right knee injury", "unrecognised", "unknown"),
+        ("Hypertension (onset after right knee surgery)", "unrecognised", "unknown"),
+        ("Hemorrhoids, onset since left ankle fracture", "unrecognised", "unknown"),
+        # the cost, accepted: read correctly on 12705f8, now left to materiality or a question
+        ("Scar from shell fragment wound, right thigh", "unrecognised", "unknown"),
+        # controls: the same facts before the word, or no such word
+        ("Left hip strain, onset after knee injury", "lower", "left"),
+        ("Shortening of the right leg by 2 inches", "lower", "right"),
+        ("Limitation of flexion, right knee (DC 5260)", "lower", "right"),
+    ],
+)
+def test_a_fact_only_text_after_an_opening_word_supplies_is_not_taken(condition, group, side):
+    assert _classify_extremity(condition) == group
+    assert derive_laterality(condition) == side
+
+
+def test_an_abdominal_scar_linked_to_a_right_knee_is_not_in_the_bilateral_factor(tmp_path):
+    letter = tmp_path / "scar.txt"
+    letter.write_text(HEAD + "RATING DECISION\n\n"
+                      "  1. Scar, abdomen, onset after right knee injury ........ 20%\n"
+                      "  2. Left ankle strain ........ 30%\n\n"
+                      "COMBINED EVALUATION FOR COMPENSATION: 40%\n", encoding="utf-8")
+    code, out, _ = main("audit", letter, "--case", "scar", "--brief", store=tmp_path / "runs")
+    assert "POTENTIAL DISCREPANCY" not in out
+    assert "side: right" not in out

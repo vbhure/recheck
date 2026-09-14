@@ -181,6 +181,21 @@ def primary_clause(condition: str) -> str:
     return " ".join(text.split()).strip(" ,;")
 
 
+# A link in wording _LINKED_CLAUSE does not list still usually ends in one of
+# these words ("Scar, abdomen, onset after right knee injury"). Nothing is
+# stripped at them - "Scar from shell fragment wound, right thigh" rates the
+# thigh - but a fact that only the text after one supplies is not taken from
+# the name: read whole, that scar was a right leg disability and entered the
+# 4.26 factor. See _classify_extremity and recheck.classify.derive_laterality.
+_OPEN_LINK = re.compile(r"\b(?:by|after|since|subsequent to|from)\b", re.I)
+
+
+def before_open_link(primary: str) -> str | None:
+    """The text of a primary clause before a word that may open a linked condition, if it has one."""
+    match = _OPEN_LINK.search(primary)
+    return primary[: match.start()] if match else None
+
+
 def linked_clause(condition: str) -> str:
     """Whatever primary_clause removed (the linked condition), if anything."""
     text = " ".join(_HANDEDNESS.sub(" ", condition).split())
@@ -692,7 +707,11 @@ def _classify_extremity(condition: str) -> ExtremityGroup:
     associated with lumbar spine", "strain secondary to a knee injury"), the
     lexicon has no opinion - it does not guess from the other condition.
     """
-    primary = _lexical_group(primary_clause(condition))
+    text = primary_clause(condition)
+    primary = _lexical_group(text)
+    before = before_open_link(text)
+    if before is not None and _lexical_group(before) != primary:
+        return "unrecognised"  # the group comes from text that may name another condition
     if primary != "unrecognised":
         return primary
     if linked_clause(condition):

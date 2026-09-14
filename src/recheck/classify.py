@@ -60,7 +60,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from recheck.extract.deterministic import EXTREMITY_MARKERS, ExtractedRating, primary_clause
+from recheck.extract.deterministic import EXTREMITY_MARKERS, ExtractedRating, before_open_link, primary_clause
 from recheck.provenance import Actor, Trace
 from recheck.schema import CONFIDENCE_FLOOR, MAX_CONDITION_CHARS, MAX_ITEMS, ClassificationBatch
 
@@ -189,7 +189,14 @@ def derive_laterality(condition: str) -> str:
         the left one, and "knee strain secondary to right ankle injury" has
         no stated side at all.
     """
-    return _sides_in(primary_clause(condition))
+    primary = primary_clause(condition)
+    side = _sides_in(primary)
+    before = before_open_link(primary)
+    if before is not None and _sides_in(before) != side:
+        # "Scar, abdomen, onset after right knee injury": the side comes only
+        # from text that may name another condition (see before_open_link).
+        return "unknown"
+    return side
 
 
 def _fold(text: str) -> str:
