@@ -17,9 +17,9 @@ trace.
   H4  Framework log noise. Strands logs node failures at ERROR, so a correct
       refusal printed "node failed / graph execution failed" beneath
       Recheck's one-line explanation. Suppressed unless --debug.
-  H5  Tampering with case.json cannot manufacture a rating: facts marked
-      established by hand are simply never asked about, so no answer is
-      accepted and nothing is computed.
+  H5  Tampering with case.json cannot manufacture a rating: a side marked
+      as read from the letter for a name that states none is refused when the
+      case is read, so no answer is accepted and nothing is computed.
 """
 
 from __future__ import annotations
@@ -190,26 +190,29 @@ def test_a_corrupt_strands_session_is_refused_and_the_case_is_untouched(store, i
 
 
 def test_hand_marked_facts_cannot_manufacture_a_rating(store, interrupted):
-    """H5. The tamper claims the letter established the knee's side. It is
-    then not asked about, so every answer is rejected and nothing computes."""
+    """H5. The tamper claims the letter established the knee's side. The name
+    states no side, so the case is refused as corrupt when it is read: every
+    answer is refused, nothing is written and nothing computes. (It used to
+    load, and the answer was rejected as "not asked about"; see
+    tests/test_deep_state.py STATE-2 for the tamper that then finished at exit 0.)"""
     path = interrupted / "case.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["decisions"][2].update(laterality="left", side_by="DETERMINISTIC")
     path.write_text(json.dumps(raw), encoding="utf-8")
 
     for attempt in ("2=left", "2=right", "1=left"):
-        code, _, _ = main("resume", "--case", "c1", "--answer", attempt, store=store)
+        code, _, err = main("resume", "--case", "c1", "--answer", attempt, store=store)
         assert code == EXIT_CANNOT_PROCEED
         after = case_json(store, "c1")
         assert after["recomputed_degree"] is None and after["status"] == "awaiting_human"
-        assert "was not asked about" in after["rejected_answer"]
+        assert "which does not state one" in err and after == raw
 
     raw = case_json(store, "c1")
     raw["status"] = "ready"
     path.write_text(json.dumps(raw), encoding="utf-8")
     code, _, err = main("resume", "--case", "c1", "--answer", "2=left", store=store)
     assert code == EXIT_CANNOT_PROCEED
-    assert "not waiting on an answer" in err
+    assert "which does not state one" in err
     assert case_json(store, "c1")["recomputed_degree"] is None
 
 

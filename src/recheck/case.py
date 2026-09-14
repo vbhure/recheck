@@ -215,18 +215,53 @@ class CaseSnapshot:
     session: tuple[tuple[str, ...], dict[str, bytes]] | None
 
 
+#: What a snapshot may hold in memory. A case's session is a few JSON files of
+#: a few kilobytes.
+_SESSION_READ_LIMIT = 8 * 1024 * 1024
+
+
+def _is_link(path: pathlib.Path) -> bool:
+    """A symbolic link, or any other reparse point: a Windows junction is not a symlink to pathlib."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _read_tree(root: pathlib.Path) -> tuple[tuple[str, ...], dict[str, bytes]] | None:
-    """(sub-directories, {file: bytes}) under root, as POSIX relative paths; None if root is absent."""
+    """(sub-directories, {file: bytes}) under root, as POSIX relative paths; None if root is absent.
+
+    Links are refused, not followed, and so is more than _SESSION_READ_LIMIT.
+    rglob followed a junction planted in a session: every resume read the
+    linked tree into memory, and after a resume that failed - a read-only
+    case.json is enough - restore() wrote the linked files back as real ones,
+    copying a directory from outside the store into it. Strands never writes
+    a link into a session.
+    """
+    if _is_link(root):
+        raise OSError(f"{root} is a link; a case's session is never one")
     if not root.is_dir():
         return None
-    directories, files = [], {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        if path.is_dir():
-            directories.append(relative)
-        else:
-            files[relative] = path.read_bytes()
-    return tuple(directories), files
+    directories, files, size = [], {}, 0
+    pending = [root]
+    while pending:
+        for path in sorted(pending.pop().iterdir()):
+            relative = path.relative_to(root).as_posix()
+            if _is_link(path):
+                raise OSError(f"the session under {root} holds a link, {relative}; a case's session never does")
+            if path.is_dir():
+                directories.append(relative)
+                pending.append(path)
+                continue
+            with path.open("rb") as handle:
+                data = handle.read(_SESSION_READ_LIMIT - size + 1)
+            size += len(data)
+            if size > _SESSION_READ_LIMIT:
+                raise OSError(f"the session under {root} holds more than {_SESSION_READ_LIMIT // 2**20} MB; "
+                              f"a case's session is a few small files")
+            files[relative] = data
+    return tuple(sorted(directories)), files
 
 
 class CaseStore:
@@ -405,10 +440,14 @@ class CaseStore:
         path = self.path_for(case_id)
         if not path.exists():
             raise FileNotFoundError(f"no such case: {case_id} (looked in {path})")
+        # Not only JSONDecodeError. Bytes that are not UTF-8, or a number of
+        # more than 4,300 digits, raise a plain ValueError, and a file of a few
+        # thousand "[" raises RecursionError: show and resume printed a
+        # traceback, and a sweep with --fresh would not discard such a case.
         try:
             raw = json.loads(_read_with_retry(path))
-        except json.JSONDecodeError as exc:
-            raise CaseCorrupt(f"case {case_id} is not valid JSON: {exc}") from exc
+        except (ValueError, RecursionError) as exc:
+            raise CaseCorrupt(f"case {case_id} is not valid JSON: {type(exc).__name__}: {exc}") from exc
         if not isinstance(raw, dict):
             raise CaseCorrupt(f"case {case_id} is not a JSON object")
         version = raw.get("schema_version")
@@ -457,8 +496,114 @@ class CaseStore:
                 raise CaseCorrupt(f"case {case_id} has an impossible percentage {value!r}")
         if any(not 0 <= i < len(decisions) for i in case.immaterial_unknowns):
             raise CaseCorrupt(f"case {case_id} lists an unknown fact for a condition it does not have")
+        _check_as_read(case_id, case, decisions)
+        _check_provenance(case_id, case, decisions)
+        _check_possibilities(case_id, case, decisions)
         _check_result(case_id, case, decisions)
         return case
+
+
+def _check_as_read(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """The values read from the letter are recorded alike in the facts, the ratings and the trace.
+
+    _check_result ties a figure to the stored facts, but the stated value is
+    the other half of every verdict. A case.json whose stated_combined alone
+    was edited from 70 to 80 turned "POTENTIAL DISCREPANCY" into "NO
+    DISCREPANCY FOUND" at exit 0, directly under a trace that still said
+    "Stated combined evaluation: 70%"; a percentage edited in the facts alone
+    was computed as "the evaluations as printed". The extract and classify
+    nodes write each value into the facts and the trace in the same save, so
+    the two must agree. A letter the extract node could not read is
+    "unparsed" and nothing else: marked "ready", `resume` reported "Recheck
+    computes 0%" under "Extraction FAILED". As in _check_result, a file edited
+    consistently in every place - the trace entries removed or edited too -
+    gives a consistent report of false values, which only re-reading the
+    letter can catch.
+    """
+    if case.has_trace_action("Extraction FAILED") and case.status != "unparsed":
+        raise CaseCorrupt(f"case {case_id} records that its letter could not be read, but its status is "
+                          f"{case.status!r}")
+    stated = [e.get("value") for e in case.trace if e.get("action") == "Stated combined evaluation"]
+    if len(stated) > 1 or any(v != f"{case.stated_combined}%" for v in stated):
+        raise CaseCorrupt(f"case {case_id} records a stated combined evaluation of {case.stated_combined!r}, but its "
+                          f"trace records {', '.join(map(str, stated))} as printed in the letter")
+    facts = [(d.condition, d.percent, d.evidence) for d in decisions]
+    extracted = [(e.get("detail"), e.get("value"), e.get("evidence")) for e in case.trace
+                 if e.get("action") == "Extracted rating"]
+    if extracted and extracted != [(c, f"{p}%", ev) for c, p, ev in facts]:
+        raise CaseCorrupt(f"case {case_id} has conditions or evaluations that differ from the ones its trace "
+                          f"records as extracted from the letter")
+    if case.ratings and decisions and [
+        (r.get("condition"), r.get("percent"),
+         f"line {r.get('source_line_number')}" if r.get("source_line_number") else None) for r in case.ratings
+    ] != facts:
+        raise CaseCorrupt(f"case {case_id} has conditions or evaluations that differ from the ratings extracted "
+                          f"from its letter")
+
+
+def _check_provenance(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """Every fact must be one its recorded owner could have established.
+
+    _check_result re-derives a figure from the stored facts, so the facts are
+    what a tamper changes - and who established them is what the report
+    prints beside them. An open question edited to give the knee of unstated
+    side "left", attributed to the letter, and marked "ready" was finished by
+    `resume` with no answer: POTENTIAL DISCREPANCY, 80%, "Applying 38 CFR 4.25
+    and 4.26 to the evaluations as printed", exit 0, and "side: left
+    [letter]" for a name that states no side.
+
+    Deterministic code owns the side a name states and the lexicon's group,
+    and both are functions of the name, so they are read again here rather
+    than trusted. A fact attributed to the reviewer must be the answer on
+    file; one attributed to the model must be for a name the lexicon does not
+    recognise, sendable to the model, and pass the confidence floor and the
+    veto. What a model said cannot be checked after the fact, and a file
+    edited to name a different condition is a consistent report of false
+    facts (see _check_result).
+    """
+    from recheck.classify import _letters_outside_latin1, _markers_in, _unsendable, derive_laterality
+    from recheck.extract.deterministic import _classify_extremity
+    from recheck.schema import CONFIDENCE_FLOOR
+
+    for key in case.human_answers:
+        if int(key) >= len(decisions):
+            raise CaseCorrupt(f"case {case_id} has an answer for condition {key[:12]}, which it does not have")
+    for index, d in enumerate(decisions):
+        lexicon = _classify_extremity(d.condition)
+        stated = derive_laterality(d.condition)
+        answer = case.human_answers.get(str(index))
+        problem = None
+        if (d.extremity_group == "unknown") != (d.group_by is None):
+            problem = f"extremity group {d.extremity_group!r} established by {_actor_name(d.group_by)}"
+        elif (d.laterality == "unknown") != (d.side_by is None):
+            problem = f"side {d.laterality!r} established by {_actor_name(d.side_by)}"
+        elif lexicon != "unrecognised" and (d.extremity_group, d.group_by) != (lexicon, Actor.DETERMINISTIC):
+            problem = f"extremity group {d.extremity_group!r} for a name the lexicon reads as {lexicon!r}"
+        elif lexicon == "unrecognised" and d.group_by is Actor.DETERMINISTIC:
+            problem = "extremity group attributed to the lexicon, which does not recognise the name"
+        elif d.group_by is Actor.AI and (
+            d.confidence is None or d.confidence < CONFIDENCE_FLOOR
+            or _unsendable(d.condition) is not None
+            or (d.extremity_group == "none" and (_markers_in(d.condition) or _letters_outside_latin1(d.condition)))
+        ):
+            problem = "extremity group attributed to a model classification Recheck would not have used"
+        elif d.side_by is Actor.AI:
+            problem = "side attributed to a model, which never establishes one"
+        elif stated != "unknown" and d.laterality != stated and not (d.extremity_group == "none"
+                                                                    and d.laterality == "unknown"):
+            problem = f"side {d.laterality!r} for a name that states {stated!r}"
+        elif stated == "unknown" and d.side_by is Actor.DETERMINISTIC:
+            problem = f"side {d.laterality!r} attributed to the letter, which does not state one for this name"
+        elif Actor.HUMAN in (d.group_by, d.side_by) and answer is None:
+            problem = "a fact attributed to the reviewer, with no answer on file"
+        elif answer is not None and answer != f"{d.extremity_group}-{d.laterality}":
+            problem = f"an answer on file ({answer[:40]!r}) that is not its extremity group and side"
+        if problem:
+            raise CaseCorrupt(f"case {case_id} decision [{index}] has {problem}")
+
+
+def _actor_name(actor: Actor | None) -> str:
+    return actor.value if actor else "nobody"
 
 
 #: The trace action the compute node records when 4.26(d) decides a result.
@@ -582,6 +727,49 @@ def _trace_agrees(computed: list[dict[str, Any]], final: int, combined: int,
     return True
 
 
+def _check_possibilities(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """Possible degrees and "nobody was asked" indices on file are the ones assess gives for the facts.
+
+    The report and the triage print both as Recheck's findings. Edited on
+    file, an open question read "could be 90%" for a letter whose facts give
+    70% or 80%, and a complete case said "unknown facts for [1] could not
+    change this result, so nobody was asked" of a condition with no unknown
+    fact.
+    """
+    m = _assessed(decisions)
+    if case.immaterial_unknowns and case.immaterial_unknowns != list(m.unknown):
+        raise CaseCorrupt(f"case {case_id} lists an unknown fact its conditions do not have")
+    possible = case.possible_degrees
+    if case.status == "awaiting_human":
+        wrong = possible != list(m.possible)
+    elif case.status == "ready":
+        # Kept from the question the reviewer answered; the answers pick one of them.
+        wrong = bool(possible) and m.settled and not set(m.possible) <= set(possible)
+    elif case.status == "complete":
+        # Its result is re-derived by _check_result; the report prints no possible degrees for it.
+        wrong = False
+    else:
+        # None at all is allowed: an undetermined case whose possibilities were
+        # not enumerated has none, and a case that never reached assess has none.
+        wrong = bool(possible) and possible != list(m.possible)
+    if wrong:
+        raise CaseCorrupt(f"case {case_id} records possible final degrees {possible[:8]} that its facts do not give")
+
+
+_ASSESSED: dict[tuple[tuple[int, str, str], ...], Any] = {}
+
+
+def _assessed(decisions: list[Decision]):
+    """materiality.assess for these facts, cached: a sweep loads each case several times,
+    and only the percentage, group and side of each condition enter it."""
+    key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
+    if key not in _ASSESSED:
+        if len(_ASSESSED) > 512:
+            _ASSESSED.clear()
+        _ASSESSED[key] = assess(decisions)
+    return _ASSESSED[key]
+
+
 _DERIVED: dict[tuple[tuple[int, str, str], ...], tuple | None] = {}
 
 
@@ -596,7 +784,7 @@ def _derive(decisions: list[Decision]) -> tuple | None:
     """
     key = tuple((d.percent, d.extremity_group, d.laterality) for d in decisions)
     if key not in _DERIVED:
-        m = assess(decisions)
+        m = _assessed(decisions)
         # Not only unknown facts: a single evaluation naming both sides can
         # leave M21-1's reading open with every fact known.
         if not m.settled:

@@ -124,6 +124,11 @@ def test_the_compute_node_refuses_a_case_that_is_not_ready_even_when_its_facts_a
     case = store.load("s")
     assert case.status == "classified" and assess(case.load_decisions()).settled  # precondition
     case.status = status
+    if status == "awaiting_human":
+        # A case that waits on a question records the possible degrees its facts
+        # give; the load refuses one that does not (STATE-5), which would stop
+        # the node before its own status check is reached.
+        case.possible_degrees = list(assess(case.load_decisions()).possible)
     store.save(case)
 
     result = asyncio.run(ComputeNode(store, "s").invoke_async("compute"))

@@ -201,7 +201,15 @@ def test_the_compute_node_refuses_a_ready_case_over_the_member_limit(tmp_path):
 
     store = CaseStore(tmp_path / "runs")
     case = graph.open_case(store, "ready13", str(tmp_path / "none.txt"))
-    case.store_decisions([D(10, g, s) for g, s in [("lower", "left"), ("lower", "right")] * 4
+    # Names that state each side and group, established by the lexicon and
+    # the letter: the store refuses facts their recorded owner could not have
+    # established (tests/test_deep_state.py, STATE-2).
+    from recheck.provenance import Actor
+
+    names = {"lower": "knee strain", "upper": "shoulder strain"}
+    case.store_decisions([Decision(f"{s.capitalize()} {names[g]}", 10, g, s, Actor.DETERMINISTIC, Actor.DETERMINISTIC,
+                                   None, None, None)
+                          for g, s in [("lower", "left"), ("lower", "right")] * 4
                           + [("upper", "left"), ("upper", "right")] * 2 + [("upper", "left")]])
     case.status = "ready"
     store.save(case)

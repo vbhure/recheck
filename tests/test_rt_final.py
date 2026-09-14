@@ -187,6 +187,10 @@ def test_an_over_the_member_limit_case_does_not_blame_unknown_facts(tmp_path):
     assert re.search(r"\w$", rows_out[start + 1])
 
 
+def _without_extracted(trace):
+    return [e for e in trace if e["action"] != "Extracted rating"]
+
+
 # ==========================================================================
 # RG-05: a complete case whose reading is still open
 # ==========================================================================
@@ -197,11 +201,14 @@ def test_a_complete_case_whose_m21_reading_is_open_is_corrupt(tmp_path):
     assert main("audit", letter, "--case", "a", store=store)[0] == EXIT_OK
 
     def decision(percent, group, side):
-        return {"condition": f"{side} {group} {percent}", "percent": percent, "extremity_group": group,
+        # Names the lexicon reads as these facts (see test_rt_verify._decision).
+        names = {"upper": "shoulder strain", "lower": "knee strain"}
+        condition = f"{'Bilateral' if side == 'both' else side.capitalize()} {names[group]}"
+        return {"condition": condition, "percent": percent, "extremity_group": group,
                 "laterality": side, "group_by": "DETERMINISTIC", "side_by": "DETERMINISTIC", "confidence": None,
                 "note": None, "evidence": None}
 
-    _edit(store, "a", lambda raw: raw.update(decisions=[
+    _edit(store, "a", lambda raw: raw.update(ratings=[], trace=_without_extracted(raw["trace"]), decisions=[
         decision(20, "upper", "left"), decision(10, "upper", "right"), decision(30, "lower", "both")]))
     with pytest.raises(CaseCorrupt, match="could change its result"):
         CaseStore(store).load("a")

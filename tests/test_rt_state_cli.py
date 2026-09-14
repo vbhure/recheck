@@ -397,7 +397,17 @@ def test_the_triage_and_report_say_how_to_finish_a_ready_case(store):
     from recheck.report import verdict
     from recheck.sweep import outcome_from_case
 
-    case = Case("r", "x.txt", status="ready", human_answers={"2": "lower-left"})
+    # The answer on file is the fact it established (the store refuses an
+    # answer for a condition the case does not have; tests/test_deep_state.py).
+    def fact(condition, percent, group, side, side_by):
+        return {"condition": condition, "percent": percent, "extremity_group": group, "laterality": side,
+                "group_by": "DETERMINISTIC", "side_by": side_by, "confidence": None, "note": None, "evidence": None}
+
+    case = Case("r", "x.txt", status="ready", human_answers={"2": "lower-left"}, decisions=[
+        fact("Post-traumatic stress disorder", 60, "none", "unknown", None),
+        fact("Right knee strain", 20, "lower", "right", "DETERMINISTIC"),
+        fact("Limitation of motion of the knee", 10, "lower", "left", "HUMAN"),
+        fact("Tinnitus", 10, "none", "unknown", None)])
     headline, explanation = verdict(case)
     assert headline.startswith("RUN DID NOT FINISH")
     assert "resume" in explanation and "without an answer" in explanation
