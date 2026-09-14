@@ -166,7 +166,13 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
             raise DocumentTooLarge(str(outcome.value))
         if outcome.kind == "invisible":
             raise ScannedDocument(str(outcome.value))
-        text = str(outcome.value)
+        # pypdf decodes a font's ToUnicode map as UTF-16 code units, so a
+        # malformed map leaves a lone surrogate in the text. It is not a
+        # character: the Strands session could not write a question naming the
+        # condition (the case was left awaiting an answer nobody could give),
+        # and a finished report could not be printed. Pairs are joined; a lone
+        # one becomes U+FFFD, which no percentage or side is read from.
+        text = str(outcome.value).encode("utf-16", "surrogatepass").decode("utf-16", "replace")
         if not text.strip():
             raise ScannedDocument(
                 f"{p.name} has no extractable text layer. This document requires OCR, "

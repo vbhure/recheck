@@ -180,3 +180,50 @@ def test_control_a_render_mode_restored_before_any_text_is_still_read(tmp_path):
     assert "COMBINED EVALUATION FOR COMPENSATION: 70%" in read_document(path)
     code, out, _ = main("audit", path, "--case", "visible", "--brief", store=tmp_path / "runs")
     assert code == EXIT_OK and "POTENTIAL DISCREPANCY" in out
+
+
+# --------------------------------------------------------------------------
+# FILES-3: a lone surrogate from a malformed ToUnicode map
+# --------------------------------------------------------------------------
+
+def _pdf_with_a_lone_surrogate(letter: str, after: str) -> bytes:
+    """The letter as a text PDF whose glyph 0x01, drawn just after `after`, maps to U+D800."""
+    cmap = (b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def\n"
+            b"1 begincodespacerange <00> <FF> endcodespacerange\n"
+            b"1 beginbfchar <01> <D800> endbfchar\n"
+            b"endcmap CMapName currentdict /CMap defineresource pop end end")
+    shown = []
+    for line in letter.splitlines():
+        if after in line:
+            head, tail = line.split(after, 1)
+            shown.append(_literal(head + after) + b" Tj (\x01) Tj " + _literal(tail) + b" Tj T*")
+        else:
+            shown.append(_literal(line) + b" Tj T*")
+    content = b"BT /F1 9 Tf 20 800 Td 12 TL " + b" ".join(shown) + b" ET"
+    return _one_page(content, font=b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /ToUnicode 6 0 R >>",
+                     extra_objects=(_stream(cmap),))
+
+
+def test_a_lone_surrogate_in_pdf_text_does_not_reach_the_case(tmp_path):
+    path = tmp_path / "letter.pdf"
+    path.write_bytes(_pdf_with_a_lone_surrogate(TABULAR, "Tinn"))
+    text = read_document(path)
+    assert "Tinn�itus" in text
+    text.encode("utf-8")  # raised UnicodeEncodeError: surrogates not allowed
+
+
+def test_a_question_naming_a_condition_with_a_lone_surrogate_can_be_answered(tmp_path):
+    """Before: exit 3 "UnicodeEncodeError: 'utf-8' codec can't encode
+    character '\\ud800'"; the case said awaiting_human, its session held no
+    question, and resume refused it forever."""
+    letter = (LETTERS / "05_missing_side.txt").read_text(encoding="utf-8")
+    path = tmp_path / "question.pdf"
+    path.write_bytes(_pdf_with_a_lone_surrogate(letter, "degenerative"))
+    store = tmp_path / "runs"
+    code, out, err = main("audit", path, "--case", "q", store=store)
+    assert code == EXIT_AWAITING_HUMAN, out + err
+    code, out, err = main("resume", "--case", "q", "--answer", "1=left,2=right", store=store)
+    assert code == EXIT_OK, out + err
+    assert case_json(store, "q")["status"] == "complete"
+    code, out, err = main("show", "--case", "q", "--brief", store=store)
+    assert code == EXIT_OK and "�" in out
