@@ -83,3 +83,28 @@ def test_audit_fresh_with_an_unusable_provider_keeps_the_answered_case_on_file(t
     code, out, _ = main("show", "--case", "keep", "--brief", store=store)
     assert code == EXIT_OK, "the answered case was deleted by a command that then refused to run"
     assert "reviewer" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# --classifications that cannot be used
+# ---------------------------------------------------------------------------
+
+def test_a_missing_classification_fixture_is_refused_not_replayed_as_empty(tmp_path):
+    """A mistyped path ran with no classifications, and reports named the missing file as the fixture."""
+    store = tmp_path / "runs"
+    missing = tmp_path / "07_clinical_term.json"
+    code, out, err = main("audit", LETTERS / "07_clinical_terms.txt", "--case", "typo", "--scripted",
+                          "--classifications", missing, store=store)
+    assert code == EXIT_CANNOT_PROCEED, out
+    assert "no classification fixture" in err
+    assert not (store / "typo").exists()
+
+
+def test_a_classification_fixture_that_is_not_an_object_is_refused_without_a_traceback(tmp_path):
+    """A JSON list escaped from main as AttributeError (exit 1, traceback)."""
+    fixture = tmp_path / "list.json"
+    fixture.write_text("[1, 2]", encoding="utf-8")
+    code, _, err = main("audit", LETTERS / "07_clinical_terms.txt", "--case", "lst", "--scripted",
+                        "--classifications", fixture, store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "must be a JSON object" in err

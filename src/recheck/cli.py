@@ -78,14 +78,30 @@ def _scripted_factory(fixture: pathlib.Path | None):
     from recheck.extract.deterministic import primary_clause
     from recheck.models.scripted import ScriptedModel
 
-    if fixture is None or not fixture.exists():
+    if fixture is None:
         payload = {"classifications": []}
     else:
-        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        # A mistyped path replayed an empty fixture while every report said
+        # its decisions were "replayed from a committed fixture (<that path>)",
+        # and a fixture that was not a JSON object escaped as a traceback.
+        shown = _shown_path(fixture)
+        if not fixture.is_file():
+            raise ValueError(f"no classification fixture at {shown}")
+        try:
+            payload = json.loads(fixture.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"classification fixture {shown} could not be read: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"classification fixture {shown} must be a JSON object, not {type(payload).__name__}")
 
     anatomy = payload.get("anatomy")
     if anatomy:
-        confidence = float(payload.get("confidence", 0.9))
+        try:
+            confidence = float(payload.get("confidence", 0.9))
+            if not isinstance(anatomy, dict):
+                raise TypeError(f"anatomy is {type(anatomy).__name__}, not an object")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"classification fixture {_shown_path(fixture)} is malformed: {exc}") from exc
 
         def responder(_tool, messages):
             text = "".join(block.get("text", "") for block in messages[-1].get("content", []))
