@@ -284,6 +284,13 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
     for outcome in outcomes:
         if outcome.state == Outcome.FAILED:
             failed.append((outcome, _detail_rows(outcome.case_id, outcome.detail)))
+            if outcome.reused:
+                # A row that says "re-audit with --fresh" (letter changed,
+                # question lost) can hold a reviewer's answers too.
+                try:
+                    answered_on_file += bool(store.load(outcome.case_id).human_answers)
+                except Exception:  # noqa: BLE001 - a case that cannot be loaded is already listed
+                    pass
             continue
         try:
             case = store.load(outcome.case_id)

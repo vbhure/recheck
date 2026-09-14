@@ -132,3 +132,23 @@ def test_sweep_fresh_says_which_reviewer_answers_it_discards(tmp_path):
     code, out, _ = main("sweep", folder, "--fresh", store=store)
     assert code == EXIT_AWAITING_HUMAN
     assert "--fresh discarded the reviewer answers on file for 1 case(s): answered (1=upper-left,2=upper-right)" in out
+
+
+def test_sweep_warns_before_fresh_discards_the_answers_of_a_case_whose_letter_changed(tmp_path):
+    """The row said "letter changed ...; re-audit with --fresh" and the footer did not say that discards answers."""
+    import shutil
+
+    store = tmp_path / "runs"
+    folder = tmp_path / "letters"
+    folder.mkdir()
+    letter = folder / "answered.txt"
+    shutil.copy(LETTERS / "07_clinical_terms.txt", letter)
+    assert main("sweep", folder, store=store)[0] == EXIT_AWAITING_HUMAN
+    assert main("resume", "--case", "answered", "--answer", "1=upper,2=upper", store=store)[0] == EXIT_OK
+    with letter.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
+
+    code, out, _ = main("sweep", folder, store=store)
+    assert code == EXIT_CANNOT_PROCEED
+    assert "letter changed" in out
+    assert "discards the reviewer answers on file for 1 case(s)" in " ".join(out.split())
