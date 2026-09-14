@@ -405,10 +405,14 @@ class CaseStore:
         path = self.path_for(case_id)
         if not path.exists():
             raise FileNotFoundError(f"no such case: {case_id} (looked in {path})")
+        # Not only JSONDecodeError. Bytes that are not UTF-8, or a number of
+        # more than 4,300 digits, raise a plain ValueError, and a file of a few
+        # thousand "[" raises RecursionError: show and resume printed a
+        # traceback, and a sweep with --fresh would not discard such a case.
         try:
             raw = json.loads(_read_with_retry(path))
-        except json.JSONDecodeError as exc:
-            raise CaseCorrupt(f"case {case_id} is not valid JSON: {exc}") from exc
+        except (ValueError, RecursionError) as exc:
+            raise CaseCorrupt(f"case {case_id} is not valid JSON: {type(exc).__name__}: {exc}") from exc
         if not isinstance(raw, dict):
             raise CaseCorrupt(f"case {case_id} is not a JSON object")
         version = raw.get("schema_version")
