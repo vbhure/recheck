@@ -226,7 +226,12 @@ def test_a_partial_answer_for_an_asked_condition_still_brings_a_follow_up(tmp_pa
 # ==========================================================================
 
 def _decision(percent, group, side):
-    return {"condition": f"{side} {group} {percent}", "percent": percent, "extremity_group": group,
+    # Names the lexicon reads as these facts, and no "Extracted rating" entries
+    # or ratings for the letter's own two: the store refuses facts that
+    # contradict the trace or a name (tests/test_deep_state.py).
+    names = {"upper": "shoulder strain", "lower": "knee strain"}
+    condition = f"{'Bilateral' if side == 'both' else side.capitalize()} {names[group]}"
+    return {"condition": condition, "percent": percent, "extremity_group": group,
             "laterality": side, "group_by": "DETERMINISTIC", "side_by": "DETERMINISTIC", "confidence": None,
             "note": None, "evidence": None}
 
@@ -238,7 +243,9 @@ def test_a_ready_case_whose_facts_leave_the_result_open_is_not_computed(tmp_path
     path = store / "a" / "case.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["decisions"] = [_decision(20, "upper", "left"), _decision(10, "upper", "right"), _decision(30, "lower", "both")]
-    raw["trace"] = [e for e in raw["trace"] if e["action"] not in ("Arithmetic", "Note", "Final degree of disability")]
+    raw["trace"] = [e for e in raw["trace"]
+                    if e["action"] not in ("Arithmetic", "Note", "Final degree of disability", "Extracted rating")]
+    raw["ratings"] = []
     raw["status"] = "ready"
     raw.update(recomputed_combined=None, recomputed_degree=None, alternative_degree=None, bilateral_applied=False,
                bilateral_note=None)
@@ -270,7 +277,9 @@ def test_the_compute_node_refuses_facts_that_leave_the_result_open(tmp_path):
                  Decision("Bronchial asthma", 60, "none", "unknown", Actor.DETERMINISTIC, None, None, None, None)]
     case.status = "ready"
     case.recomputed_combined = case.recomputed_degree = case.alternative_degree = None
-    case.trace = [e for e in case.trace if e["action"] not in ("Arithmetic", "Note", "Final degree of disability")]
+    case.trace = [e for e in case.trace
+                  if e["action"] not in ("Arithmetic", "Note", "Final degree of disability", "Extracted rating")]
+    case.ratings = []
     case.store_decisions(decisions)
     store.save(case)
     result = asyncio.run(ComputeNode(store, "b").invoke_async("compute"))

@@ -496,8 +496,47 @@ class CaseStore:
                 raise CaseCorrupt(f"case {case_id} has an impossible percentage {value!r}")
         if any(not 0 <= i < len(decisions) for i in case.immaterial_unknowns):
             raise CaseCorrupt(f"case {case_id} lists an unknown fact for a condition it does not have")
+        _check_as_read(case_id, case, decisions)
         _check_result(case_id, case, decisions)
         return case
+
+
+def _check_as_read(case_id: str, case: Case, decisions: list[Decision]) -> None:
+    """The values read from the letter are recorded alike in the facts, the ratings and the trace.
+
+    _check_result ties a figure to the stored facts, but the stated value is
+    the other half of every verdict. A case.json whose stated_combined alone
+    was edited from 70 to 80 turned "POTENTIAL DISCREPANCY" into "NO
+    DISCREPANCY FOUND" at exit 0, directly under a trace that still said
+    "Stated combined evaluation: 70%"; a percentage edited in the facts alone
+    was computed as "the evaluations as printed". The extract and classify
+    nodes write each value into the facts and the trace in the same save, so
+    the two must agree. A letter the extract node could not read is
+    "unparsed" and nothing else: marked "ready", `resume` reported "Recheck
+    computes 0%" under "Extraction FAILED". As in _check_result, a file edited
+    consistently in every place - the trace entries removed or edited too -
+    gives a consistent report of false values, which only re-reading the
+    letter can catch.
+    """
+    if case.has_trace_action("Extraction FAILED") and case.status != "unparsed":
+        raise CaseCorrupt(f"case {case_id} records that its letter could not be read, but its status is "
+                          f"{case.status!r}")
+    stated = [e.get("value") for e in case.trace if e.get("action") == "Stated combined evaluation"]
+    if len(stated) > 1 or any(v != f"{case.stated_combined}%" for v in stated):
+        raise CaseCorrupt(f"case {case_id} records a stated combined evaluation of {case.stated_combined!r}, but its "
+                          f"trace records {', '.join(map(str, stated))} as printed in the letter")
+    facts = [(d.condition, d.percent, d.evidence) for d in decisions]
+    extracted = [(e.get("detail"), e.get("value"), e.get("evidence")) for e in case.trace
+                 if e.get("action") == "Extracted rating"]
+    if extracted and extracted != [(c, f"{p}%", ev) for c, p, ev in facts]:
+        raise CaseCorrupt(f"case {case_id} has conditions or evaluations that differ from the ones its trace "
+                          f"records as extracted from the letter")
+    if case.ratings and decisions and [
+        (r.get("condition"), r.get("percent"),
+         f"line {r.get('source_line_number')}" if r.get("source_line_number") else None) for r in case.ratings
+    ] != facts:
+        raise CaseCorrupt(f"case {case_id} has conditions or evaluations that differ from the ratings extracted "
+                          f"from its letter")
 
 
 #: The trace action the compute node records when 4.26(d) decides a result.

@@ -255,7 +255,10 @@ def test_facts_the_engine_refuses_on_a_complete_case_do_not_stop_a_sweep(store, 
     many = [{"condition": f"{side} knee strain {i}", "percent": 10, "extremity_group": "lower", "laterality": side,
              "group_by": "DETERMINISTIC", "side_by": "DETERMINISTIC", "confidence": None, "note": None,
              "evidence": None} for i in range(7) for side in ("left", "right")]
-    _edit(store, "a", lambda raw: raw.update(decisions=many))
+    # Without the letter's own "Extracted rating" entries and ratings, which
+    # the store would otherwise find contradicted (tests/test_deep_state.py).
+    _edit(store, "a", lambda raw: raw.update(
+        decisions=many, ratings=[], trace=[e for e in raw["trace"] if e["action"] != "Extracted rating"]))
 
     with pytest.raises(CaseCorrupt, match="engine refuses|could change its result"):
         CaseStore(store).load("a")
