@@ -154,15 +154,22 @@ EXTREMITY_MARKERS = re.compile(
 # Clauses that name a DIFFERENT condition the rated one is linked to. The
 # rated condition's own anatomy and side come before them: in "Left knee
 # strain, secondary to right knee strain" the rated knee is the left one.
+# The list is closed, so a link worded another way is not stripped; "Left hip
+# strain, caused by right knee disability" read as both sides and entered the
+# 4.26 factor. recheck.classify reads two sides with no wording naming both
+# as unknown, and _lexical_group abstains on a limb beside a non-extremity
+# condition, for the wordings still missing here.
 _LINKED_CLAUSE = re.compile(
     r"[,;]?\s*\(?\b(?:secondary to|associated with|due to|claimed as|incident to|aggravated by|"
-    r"as a result of|resulting from)\b.*$",
+    r"as a result of|resulting from|caused by|related to|because of|attributable to|in connection with|"
+    r"compensating for|following|worsened by|exacerbated by)\b.*$",
     re.I,
 )
-# Handedness is not a side: "(right hand dominant)", "(major)", "right-handed".
+# Handedness is not a side: "(right hand dominant)", "(major)", "right-handed",
+# "right hand-dominant", "right handed", "right hand is dominant".
 _HANDEDNESS = re.compile(
     r"\((?:[^)]*\b(?:dominant|major|minor|handed)\b[^)]*)\)"
-    r"|\b(?:right|left)[- ]hand(?:ed)? dominant\b|\b(?:right|left)-handed\b",
+    r"|\b(?:right|left)[- ]hand(?:ed)?(?:[- ]|\s+is\s+)dominant\b|\b(?:right|left)[- ]handed\b",
     re.I,
 )
 
@@ -172,6 +179,23 @@ def primary_clause(condition: str) -> str:
     text = _HANDEDNESS.sub(" ", condition)
     text = _LINKED_CLAUSE.sub("", text)
     return " ".join(text.split()).strip(" ,;")
+
+
+# A link in wording _LINKED_CLAUSE does not list still usually ends in one of
+# these words ("Scar, abdomen, onset after right knee injury"). Nothing is
+# stripped at them - "Scar from shell fragment wound, right thigh" rates the
+# thigh - but a fact that only the text after one supplies is not taken from
+# the name: read whole, that scar was a right leg disability and entered the
+# 4.26 factor. See _classify_extremity and recheck.classify.derive_laterality.
+# "during" and "while" too: "Scar, abdomen, incurred during right knee surgery"
+# was still a right leg disability.
+_OPEN_LINK = re.compile(r"\b(?:by|after|since|subsequent to|from|during|while)\b", re.I)
+
+
+def before_open_link(primary: str) -> str | None:
+    """The text of a primary clause before a word that may open a linked condition, if it has one."""
+    match = _OPEN_LINK.search(primary)
+    return primary[: match.start()] if match else None
 
 
 def linked_clause(condition: str) -> str:
@@ -239,15 +263,25 @@ _TAIL_ROW = re.compile(r"[^\S\n]*(?:(?P<row>\d+)[.)][^\S\n]*)?" + _ROW_TAIL + r"
 # period took a minute to parse, and a megabyte would take hours.
 _PROSE_ANCHORS = (
     re.compile(r"\bis increased to\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    # "is increased from 10 percent to 30 percent": the prior value inside the
+    # anchor is accounted for with it (see _prose_rating). Unread, the letter
+    # was refused.
+    re.compile(r"\bis increased from\s+\d{1,3}(?:\s+percent)?\s+to\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bis continued as\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    # A 0 percent evaluation written without a percentage has no mark for the
+    # completeness check to count, so it was left out of the list silently.
+    re.compile(r"\bwith a\s+(?P<pct>noncompensable)\s+evaluation", re.I),
+    re.compile(r"\bis continued as\s+(?P<pct>noncompensable)\b", re.I),
 )
 
+# Words are separated by \s+, not a space: letters are hard-wrapped, and "Your
+# combined evaluation for\ncompensation is 70 percent." was not found at all.
 _COMBINED = [
     # One whitespace run on each side of the optional colon (see _STOP_HEADING):
     # "\s*:?\s*" took 8 s on 10,000 blank lines after the phrase.
-    re.compile(r"COMBINED EVALUATION FOR COMPENSATION\s*(?::\s*)?(\d{1,3})\s*%", re.I),
-    re.compile(r"combined evaluation for compensation is\s+(\d{1,3})\s+percent", re.I),
+    re.compile(r"COMBINED\s+EVALUATION\s+FOR\s+COMPENSATION\s*(?::\s*)?(\d{1,3})\s*%", re.I),
+    re.compile(r"combined\s+evaluation\s+for\s+compensation\s+is\s+(\d{1,3})\s+percent", re.I),
 ]
 # "Your previous combined evaluation for compensation is 30 percent" is
 # history, not the statement under review. Taking the first match anywhere
@@ -584,11 +618,12 @@ def _prose_rating(sentence: str) -> tuple[str, int, set[int], int] | None:
             continue
         start = sentence.rfind(".", 0, match.start()) + 1
         span = sentence[start:match.start()]
-        accounted = _marks(sentence, match.start("pct"), match.end())
+        accounted = _marks(sentence, match.start(), match.end())
         for prior in _PRIOR_VALUE.finditer(span):
             if _AFTER_PRIOR.fullmatch(span, prior.end()):
                 accounted |= _marks(sentence, start + prior.start("pct"), start + prior.end())
-        return span, int(match.group("pct")), accounted, start
+        value = match.group("pct")
+        return span, 0 if value.isalpha() else int(value), accounted, start
     return None  # most specific anchor wins for a given sentence
 
 
@@ -669,6 +704,12 @@ def _lexical_group(text: str) -> ExtremityGroup:
     lower = any(p in low for p in LOWER_PHRASES) or bool(words & LOWER_TERMS)
     if upper and lower:
         return "unrecognised"  # "hand and foot" - not the lexicon's call
+    if (upper or lower) and any(hint in low for hint in NON_EXTREMITY_HINTS):
+        # "Major depressive disorder worsened by right knee injury": the limb
+        # word may belong to a linked condition in wording _LINKED_CLAUSE does
+        # not list, and calling a mental disorder a leg disability put it in
+        # the 4.26 factor. Neither answer is the lexicon's call.
+        return "unrecognised"
     if upper:
         return "upper"
     if lower:
@@ -686,7 +727,11 @@ def _classify_extremity(condition: str) -> ExtremityGroup:
     associated with lumbar spine", "strain secondary to a knee injury"), the
     lexicon has no opinion - it does not guess from the other condition.
     """
-    primary = _lexical_group(primary_clause(condition))
+    text = primary_clause(condition)
+    primary = _lexical_group(text)
+    before = before_open_link(text)
+    if before is not None and _lexical_group(before) != primary:
+        return "unrecognised"  # the group comes from text that may name another condition
     if primary != "unrecognised":
         return primary
     if linked_clause(condition):
@@ -735,7 +780,10 @@ class _LineIndex:
 
     def __init__(self, text: str) -> None:
         self.text = text
-        self.lines = text.splitlines()
+        # Split at "\n" only, as line_of counts: splitlines() also breaks at a
+        # form feed (a pdftotext page break), \v, \x1c-\x1e, \x85, U+2028 and
+        # U+2029, and every later rating's source line was another line's text.
+        self.lines = text.split("\n")
         flat: list[str] = []
         origin: list[int] = []
         newlines: list[int] = []
@@ -978,6 +1026,23 @@ def parse(text: str) -> Extraction:
             f"the letter states more than one combined evaluation ({', '.join(f'{v}%' for v in sorted(stated))}); "
             f"refusing rather than choosing which one is under review"
         ))
+    # The decision section refuses a combined statement that carries a second
+    # percentage; after a stop heading nothing did, and "is 20 percent until
+    # February 28, 2026, and 30 percent thereafter" was read as 20 percent.
+    # Sentences are split within paragraphs, not by _sentences: its line
+    # grouping broke that statement at "until\nFebruary 28" and hid the stage.
+    # A sentence ends only at a period before a capital: splitting at every
+    # period or semicolon hid the stage again in "until Feb. 28, 2026, and 30
+    # percent thereafter" and "until February 28, 2026; and 30 percent".
+    for paragraph in re.split(r"\n[^\S\n]*\n", tail):
+        for sentence in re.split(r"(?<=\.)\s+(?=[A-Z])", " ".join(paragraph.split())):
+            marks = _combined_marks(sentence)
+            if marks and _unaccounted(sentence, marks) is not None:
+                return _refuse(result, (
+                    f"the combined evaluation statement after the {heading!r} heading holds more than one "
+                    f"percentage (a staged combined evaluation?); refusing rather than choosing which one is "
+                    f"under review"
+                ))
     result.stated_combined = next(iter(stated), None)
     if result.stated_combined is not None and result.stated_combined > 100:
         return _refuse(result, f"a combined evaluation of {result.stated_combined}% was read, but no combined "
