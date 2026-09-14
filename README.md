@@ -76,7 +76,7 @@ questions asked: 3.  letters with unknown facts that could not change the rating
 extremity groups: 73 lexicon, 8 AI, 0 reviewer, 1 unknown.  sides read from the letters: 41.  arithmetic: all deterministic
 ```
 
-The letters and their mix are synthetic and chosen by `tools/make_caseload.py`; the counts show the routing, not a real-world error rate.
+The letters and their mix are synthetic and chosen by `tools/make_caseload.py`; the counts show the routing, not a real-world error rate. The sweep was run with `--scripted`, and prints a zero-model notice above the triage (not shown): the 8 AI groups above are replayed from `fixtures/classifications/caseload.json`, which maps three clinical terms (cubital tunnel, lateral epicondylitis, de Quervain) to a group. No model was called.
 
 A difference is reported as **POTENTIAL DISCREPANCY — HUMAN REVIEW RECOMMENDED**, never as "VA is wrong". A result that depends on a fact nobody established is **UNDETERMINED**, with the ratings it could be when they can all be tried — never a guess, and never "no discrepancy".
 
@@ -140,7 +140,7 @@ A resume that fails part-way (a file another program holds, Ctrl+C) puts the cas
 
 ### About `--scripted`
 
-**No live model has been called in this repository's demo or tests.** `--scripted` replays a committed classification fixture *through Strands' real structured-output path* — a custom `Model` that emits the same tool-use events a provider does — so Recheck's validation, floor, veto and fail-closed routing all run for real. Every report labels those decisions `AI - replayed fixture` and says no model was called. A name the fixture does not list comes back at confidence 0 and is refused, as an uncertain model's answer would be. The caseload contains one such name on purpose ("Lisfranc injury").
+**No live model has been called in this repository's demo or tests.** `--scripted` replays a committed classification fixture *through Strands' real structured-output path* — a custom `Model` that emits the same tool-use events a provider does — so Recheck's validation, floor, veto and fail-closed routing all run for real. Every case report says in its header that AI decisions were replayed from a fixture and no model was called, and labels them `AI - replayed fixture` in its trace and evaluations table. A sweep prints a zero-model notice above its triage, where the counts say only "AI". A name the fixture does not list comes back at confidence 0 and is refused, as an uncertain model's answer would be. The caseload contains one such name on purpose ("Lisfranc injury").
 
 ## How it works
 
