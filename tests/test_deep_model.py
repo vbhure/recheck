@@ -205,6 +205,40 @@ def test_a_fresh_audit_whose_classifier_is_refused_keeps_the_existing_case(monke
 
 
 # --------------------------------------------------------------------------
+# MODEL-5: a --classifications fixture that is not a JSON object
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("content", ["[1, 2]", "42", '"upper"'])
+def test_a_fixture_that_is_not_an_object_is_refused_without_a_traceback(tmp_path, content):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(content, encoding="utf-8")
+    letter = tabular_letter(tmp_path / "f.txt", [("Right knee strain", 20), (UNLISTED, 10)], stated=30)
+    code, out, err = main("audit", letter, "--case", "f", "--scripted", "--classifications", fixture,
+                          store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "must be a JSON object" in err
+    assert not (tmp_path / "runs" / "f").exists()
+
+
+@pytest.mark.parametrize("content, reason", [
+    ('{"anatomy": {"zorblatt": "upper"}, "confidence": [1]}', '"confidence" must be a number'),
+    ('{"anatomy": {"zorblatt": "upper"}, "confidence": null}', '"confidence" must be a number'),
+    ('{"anatomy": ["zorblatt"]}', '"anatomy" must be a JSON object'),
+], ids=["confidence-list", "confidence-null", "anatomy-list"])
+def test_a_malformed_anatomy_fixture_is_refused_before_any_case(tmp_path, content, reason):
+    """A list or null confidence raised TypeError (a traceback, exit 1); an
+    anatomy list ran, and the reviewer was told "the model call failed"."""
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(content, encoding="utf-8")
+    letter = tabular_letter(tmp_path / "f.txt", [("Right knee strain", 20), (UNLISTED, 10)], stated=30)
+    code, out, err = main("audit", letter, "--case", "f", "--scripted", "--classifications", fixture,
+                          store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert reason in err
+    assert not (tmp_path / "runs" / "f").exists()
+
+
+# --------------------------------------------------------------------------
 # MODEL-7: a --classifications path that does not exist ran as the empty fixture
 # --------------------------------------------------------------------------
 

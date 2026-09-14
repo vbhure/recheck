@@ -87,10 +87,21 @@ def _scripted_factory(fixture: pathlib.Path | None):
         raise ValueError(f"no such --classifications fixture: {fixture.as_posix()}")
     else:
         payload = json.loads(fixture.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            # A list or a number here raised AttributeError below: a traceback, exit 1.
+            raise ValueError(f"{fixture.name}: a --classifications fixture must be a JSON object, "
+                             f"not {type(payload).__name__}")
 
     anatomy = payload.get("anatomy")
     if anatomy:
-        confidence = float(payload.get("confidence", 0.9))
+        # A list here failed inside the model call ("the model call failed"),
+        # and a confidence that is a list or null raised TypeError: a traceback.
+        if not isinstance(anatomy, dict):
+            raise ValueError(f"{fixture.name}: \"anatomy\" must be a JSON object, not {type(anatomy).__name__}")
+        try:
+            confidence = float(payload.get("confidence", 0.9))
+        except TypeError as exc:
+            raise ValueError(f"{fixture.name}: \"confidence\" must be a number") from exc
 
         def responder(_tool, messages):
             text = "".join(block.get("text", "") for block in messages[-1].get("content", []))
