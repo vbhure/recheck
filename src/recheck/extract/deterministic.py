@@ -736,7 +736,10 @@ class _LineIndex:
 
     def __init__(self, text: str) -> None:
         self.text = text
-        self.lines = text.splitlines()
+        # Split at "\n" only, as line_of counts: splitlines() also breaks at a
+        # form feed (a pdftotext page break), \v, \x1c-\x1e, \x85, U+2028 and
+        # U+2029, and every later rating's source line was another line's text.
+        self.lines = text.split("\n")
         flat: list[str] = []
         origin: list[int] = []
         newlines: list[int] = []

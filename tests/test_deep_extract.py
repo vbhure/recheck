@@ -243,3 +243,35 @@ def test_a_wrapped_combined_statement_letter_audits(tmp_path):
                       "compensation is 30 percent.\n", encoding="utf-8")
     code, out, _ = main("audit", letter, "--case", "wrapped", "--brief", store=tmp_path / "runs")
     assert code == EXIT_OK and "NO DISCREPANCY FOUND" in out
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-5: after a form feed (pdftotext's page break) each rating's stored
+# source_line was ANOTHER line of the letter - row 2's case.json evidence
+# read "1. Limitation of flexion, right knee ... 20%". Line numbers count
+# "\n", but the line text was looked up in str.splitlines(), which also
+# breaks at \f, \v, \x1c-\x1e, \x85, U+2028 and U+2029.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("brk", ["\f", "\v", "\x1c", "\x85", " ", " "])
+def test_each_rating_keeps_its_own_source_line_after_a_page_break(brk):
+    letter = (HEAD + brk + "\n                RATING DECISION\n\n"
+              "  1. Limitation of flexion, right knee (DC 5260) ........ 20%\n"
+              "  2. Limitation of flexion, left knee (DC 5260) ......... 10%\n\n"
+              "COMBINED EVALUATION FOR COMPENSATION: 30%\n")
+    extraction = parse(letter)
+    assert extraction.ok, extraction.unparsed_reason
+    for rating in extraction.ratings:
+        assert rating.condition in rating.source_line
+        assert rating.condition in letter.split("\n")[rating.source_line_number - 1]
+
+
+def test_a_prose_rating_keeps_its_own_source_line_after_a_page_break():
+    letter = (HEAD + "\f\nDECISION\n\n"
+              "Service connection for right knee strain is granted with an evaluation of 20 percent.\n\n"
+              "Service connection for tinnitus is granted with an evaluation of 10 percent.\n\n"
+              "Your combined evaluation for compensation is 30 percent.\n")
+    extraction = parse(letter)
+    assert extraction.ok, extraction.unparsed_reason
+    for rating in extraction.ratings:
+        assert rating.condition in rating.source_line
