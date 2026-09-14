@@ -1,6 +1,6 @@
 """Deep review, model lane: the AI / model boundary under hostile output and configuration.
 
-Regression tests for what the review found (each fails on d29fddc), then
+Regression tests for what the review found (each fails on 12705f8), then
 proofs of what held: AI output reaches nothing but an extremity group and a
 confidence, and the zero-model path uses no network.
 
@@ -258,3 +258,20 @@ def test_scripted_without_a_fixture_is_still_the_empty_fixture(tmp_path):
     code, out, err = main("audit", letter, "--case", "e", "--scripted", store=tmp_path / "runs")
     assert code == EXIT_OK
     assert case_json(tmp_path / "runs", "e")["classifier"] == "scripted: empty fixture"
+
+
+# --------------------------------------------------------------------------
+# MODEL-6: a confidence just below the floor was shown as the floor
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("confidence", [0.749, 0.7499999999])
+def test_a_confidence_just_below_the_floor_is_not_shown_as_the_floor(confidence):
+    decision = classify([_unlisted_rating()], Trace(), scripted(batch(item(UNLISTED, "upper", confidence))))[0]
+    assert decision.extremity_group == "unknown"
+    assert "at confidence 0.75," not in (decision.note or ""), decision.note
+    assert f"at confidence {confidence!r}," in (decision.note or "")
+
+
+def test_an_ordinary_low_confidence_is_still_shown_to_two_places():
+    decision = classify([_unlisted_rating()], Trace(), scripted(batch(item(UNLISTED, "upper", 0.4))))[0]
+    assert "at confidence 0.40, below the 0.75 floor" in (decision.note or "")
