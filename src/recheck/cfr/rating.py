@@ -277,6 +277,16 @@ def evaluate(
     if not group:
         if not paired:
             note = "No arm or leg disabilities with an established side; 4.26 not applied."
+        elif any(_sides_covered([p for p in paired if p.extremity == e and p.percent >= COMPENSABLE_MINIMUM])
+                 == set(SIDES) for e in EXTREMITIES):
+            # Both sides ARE covered - by one evaluation naming both, which the
+            # strict reading keeps out of the factor on its own. Citing 4.26(c)'s
+            # left-and-right requirement here contradicted the "both" it listed.
+            note = (
+                f"M21-1 V.iv.1.C.4.b: a single evaluation of both extremities takes the bilateral factor "
+                f"only with another compensable disability of the same pair in the factor; got "
+                f"{', '.join(p.label() for p in paired)}. Factor not applied."
+            )
         else:
             note = (
                 f"4.26(c): the bilateral factor requires a compensable (>={COMPENSABLE_MINIMUM}%) "

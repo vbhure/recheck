@@ -72,3 +72,19 @@ def test_subtotal_of_one_pair_left_by_426d_does_not_cite_426b():
     assert {m.extremity for m in ev.bilateral_members} == {"lower"}
     assert len(ev.excluded_under_426d) == 2 and ev.final_degree == 100
     assert ev.steps[0].rule == "38 CFR 4.26"
+
+
+def test_a_both_sides_evaluation_kept_out_of_the_factor_is_not_blamed_on_426c(tmp_path):
+    """Bilateral pes planus 30 and a knee of unstated side 30: every possibility gives
+    80%, and the report shows the established facts, where the pes planus stands
+    alone. The note said 4.26(c) needs a disability "on both the left and right
+    side ... got 30% both lower" - an evaluation that covers both sides."""
+    letter = tabular_letter(tmp_path / "letter.txt", [("PTSD (DC 9411)", 50), ("Bilateral pes planus (DC 5276)", 30),
+                                                      ("Limitation of flexion, knee (DC 5260)", 30)], stated=80)
+    code, out, _ = main("audit", letter, "--case", "pp", store=tmp_path / "st")
+    assert code == 0
+    c = case_json(tmp_path / "st", "pp")
+    assert c["recomputed_degree"] == 80 and c["decisions"][1]["laterality"] == "both"
+    notes = [e["detail"] for e in c["trace"] if e["action"] == "Note"]
+    assert notes, "precondition: the established-facts derivation carries a note"
+    assert not any(n.startswith("4.26(c)") and "both lower" in n for n in notes), notes
