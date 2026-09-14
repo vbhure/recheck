@@ -202,3 +202,25 @@ def test_a_fresh_audit_whose_classifier_is_refused_keeps_the_existing_case(monke
     assert code == EXIT_CANNOT_PROCEED
     assert (store / "k" / "case.json").exists(), "the refused re-audit deleted the case"
     assert case_json(store, "k") == before
+
+
+# --------------------------------------------------------------------------
+# MODEL-7: a --classifications path that does not exist ran as the empty fixture
+# --------------------------------------------------------------------------
+
+def test_a_classifications_fixture_that_does_not_exist_is_refused(tmp_path):
+    """A mistyped path ran as the empty fixture: exit 2, and a question telling
+    the reviewer "the model output was invalid or incomplete"."""
+    letter = tabular_letter(tmp_path / "m.txt", [("Right knee strain", 20), (f"{UNLISTED}, left", 20)], stated=40)
+    code, out, err = main("audit", letter, "--case", "m", "--scripted", "--classifications", tmp_path / "typo.json",
+                          store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "no such --classifications fixture" in err
+    assert not (tmp_path / "runs" / "m").exists()
+
+
+def test_scripted_without_a_fixture_is_still_the_empty_fixture(tmp_path):
+    letter = tabular_letter(tmp_path / "e.txt", [("Right knee strain", 20), ("Tinnitus", 10)], stated=30)
+    code, out, err = main("audit", letter, "--case", "e", "--scripted", store=tmp_path / "runs")
+    assert code == EXIT_OK
+    assert case_json(tmp_path / "runs", "e")["classifier"] == "scripted: empty fixture"

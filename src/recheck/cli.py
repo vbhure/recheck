@@ -78,8 +78,13 @@ def _scripted_factory(fixture: pathlib.Path | None):
     from recheck.extract.deterministic import primary_clause
     from recheck.models.scripted import ScriptedModel
 
-    if fixture is None or not fixture.exists():
+    if fixture is None:
         payload = {"classifications": []}
+    elif not fixture.is_file():
+        # A mistyped path used to run as the empty fixture, and the reviewer
+        # was told "the model output was invalid or incomplete" for every name
+        # the fixture would have answered.
+        raise ValueError(f"no such --classifications fixture: {fixture.as_posix()}")
     else:
         payload = json.loads(fixture.read_text(encoding="utf-8"))
 
