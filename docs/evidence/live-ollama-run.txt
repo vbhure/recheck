@@ -1,0 +1,157 @@
+Live model run - recorded 2026-09-15 01:13 IST on the build machine (Windows, Intel i5-8265U, no GPU).
+Recheck at commit fff12f0 (same src as master), strands-agents 1.55.1, ollama python client 0.6.2, Ollama 0.34.0, model qwen2.5:3b.
+
+== how it was run ==
+command (cwd = video/work): python -m recheck.cli --store runs/live audit fixtures/letters/07_clinical_terms.txt --case live --model ollama --fresh
+python: .venv of the clean clone at commit fff12f0 (strands-agents 1.55.1, ollama python client 0.6.2)
+env var names set: PYTHONIOENCODING, RECHECK_MODEL_ID, RECHECK_OLLAMA_HOST, RECHECK_TIMEOUT_S
+env values: RECHECK_MODEL_ID=qwen2.5:3b, RECHECK_OLLAMA_HOST=http://127.0.0.1:11434, RECHECK_TIMEOUT_S=240, PYTHONIOENCODING=utf-8 (no secrets involved)
+model: qwen2.5:3b (Ollama local, 100% CPU, Intel i5-8265U, no GPU)
+ollama: ollama version is 0.34.0 (installed via winget Ollama.Ollama)
+started: 2026-09-15T01:13:24+0530
+wall time: 36.4s
+exit code: 0
+
+corroboration (excerpt of the Ollama server log, same machine, timestamps IST):
+  01:13:07  POST /api/generate  200  4.14s   <- model preload only (empty prompt, keep_alive), issued manually before the run
+  01:14:00  POST /api/chat      200  32.97s  127.0.0.1  <- the one Recheck classification call
+  llama runner: prompt eval 536 tokens in 23.42s (22.9 tok/s); eval 79 tokens in 9.51s (8.2 tok/s); truncated = 0
+note: the call took ~33s on this CPU, so the default RECHECK_TIMEOUT_S (30s) would have abandoned it; 240 was set for that reason.
+note: attempts used: 1 of 3. Show capture: live_ollama_show.txt (identical report, re-rendered from runs/live/live/case.json, classifier "ollama:qwen2.5:3b").
+note: the clean-clone venv refuses non-loopback sockets (sitecustomize); only loopback 127.0.0.1:11434 was contacted.
+
+== audit output, verbatim ==
+[recheck] LIVE model provider: ollama:qwen2.5:3b (http://127.0.0.1:11434, timeout 240s, max_tokens 4096, temperature 0)
+
+==========================================================================
+RECHECK - combined rating verification
+case live   letter: 07_clinical_terms.txt
+AI decisions from a live model (ollama:qwen2.5:3b)
+==========================================================================
+
+DECISION TRACE - who decided what
+--------------------------------------------------------------------------
+[DETERMINISTIC]
+  Stated combined evaluation: 70%
+      as printed in 07_clinical_terms.txt
+      (38 CFR 4.25 (value under review); evidence: combined evaluation statement)
+[DETERMINISTIC]
+  Extracted rating: 60%
+      bronchial asthma
+      (38 CFR 4.25 (individual evaluations as stated); evidence: line 11)
+[DETERMINISTIC]
+  Extremity group: none
+      bronchial asthma: recognised as a condition that is not of an arm or
+      leg
+      (38 CFR 4.26(a); evidence: line 11)
+[DETERMINISTIC]
+  Extracted rating: 20%
+      left cubital tunnel syndrome
+      (38 CFR 4.25 (individual evaluations as stated); evidence: line 14)
+[AI]
+  Extremity group: upper
+      left cubital tunnel syndrome
+      (confidence 1.00; evidence: line 14)
+[DETERMINISTIC]
+  Side: left
+      "left" appears in the condition as the letter wrote it
+      (evidence: line 14)
+[DETERMINISTIC]
+  Extracted rating: 10%
+      right De Quervain's tenosynovitis
+      (38 CFR 4.25 (individual evaluations as stated); evidence: line 17)
+[AI]
+  Extremity group: upper
+      right De Quervain's tenosynovitis
+      (confidence 1.00; evidence: line 17)
+[DETERMINISTIC]
+  Side: right
+      "right" appears in the condition as the letter wrote it
+      (evidence: line 17)
+[DETERMINISTIC]
+  Extracted rating: 10%
+      tinnitus
+      (38 CFR 4.25 (individual evaluations as stated); evidence: line 20)
+[DETERMINISTIC]
+  Extremity group: none
+      tinnitus: recognised as a condition that is not of an arm or leg
+      (38 CFR 4.26(a); evidence: line 20)
+[DETERMINISTIC]
+  Assessment: ready to compute
+      every fact 4.25 and 4.26 need is established
+      (evidence: none recorded)
+[DETERMINISTIC]
+  Bilateral factor applies: 2 disabilities in the factor
+      compensable disabilities on both the left and right side of upper
+      extremities: 20% left upper, 10% right upper
+      (38 CFR 4.26(a)-(c))
+[DETERMINISTIC]
+  Arithmetic: 31
+      bilateral disabilities 20% left upper, 10% right upper: combine as
+      usual (28), then ADD (not combine) 10% of that value; the result is
+      treated as one disability
+      (38 CFR 4.26)
+[DETERMINISTIC]
+  Arithmetic: 60
+      bilateral subtotal plus remaining ratings: arrange in descending
+      severity; start at the greatest disability
+      (38 CFR 4.25(a))
+[DETERMINISTIC]
+  Arithmetic: 72
+      combine 60 with 31: 60 + (40 x 31%) rounded
+      (38 CFR 4.25 Table I)
+[DETERMINISTIC]
+  Arithmetic: 75
+      combine 72 with 10: 72 + (28 x 10%) rounded
+      (38 CFR 4.25 Table I)
+[DETERMINISTIC]
+  Note
+      Bilateral factor is favorable: 80% with it, 70% without.
+      (38 CFR 4.26)
+[DETERMINISTIC]
+  Final degree of disability: 80%
+      combined value 75 converted to the nearest degree divisible by 10;
+      values ending in 5 are adjusted upward
+      (38 CFR 4.25(a))
+
+EVALUATIONS  (who established each fact in brackets)
+--------------------------------------------------------------------------
+  [0] 60%  bronchial asthma
+           extremity group: none [lexicon]
+  [1] 20%  left cubital tunnel syndrome
+           extremity group: upper [AI]   side: left [letter]
+  [2] 10%  right De Quervain's tenosynovitis
+           extremity group: upper [AI]   side: right [letter]
+  [3] 10%  tinnitus
+           extremity group: none [lexicon]
+
+ARITHMETIC
+--------------------------------------------------------------------------
+  stated combined evaluation        70%
+  recomputed combined value         75
+  recomputed final degree           80%
+  38 CFR 4.26 bilateral factor      applied
+  final degree without the factor   70%
+
+==========================================================================
+POTENTIAL DISCREPANCY - HUMAN REVIEW RECOMMENDED
+==========================================================================
+The letter states 70%. Applying 38 CFR 4.25 and 4.26 to the evaluations
+as printed and the AI classification of [1], [2] (from a live model)
+gives 80%, which is higher. Check it against the rating code sheet and
+claims file: this is a question to raise in review, not a finding of
+error, and the difference may rest on facts or judgments Recheck cannot
+see.
+
+who established what: extremity group - 2 lexicon, 2 AI; side - 2 from
+the letter; arithmetic - deterministic
+graph nodes: extract, classify, assess, compute [process 21032]
+
+Recheck checks combined-rating arithmetic against 38 CFR 4.25 and 4.26
+as currently in force. It reads the narrative decision letter, not the
+rating code sheet. It is not legal advice, not a VA adjudication, and
+not a claims or appeals service. It cannot see the medical evidence or
+the rating criteria applied, so a difference is a question to raise in
+review - not a conclusion that the decision is wrong.
+==========================================================================
+[exit code: 0]
