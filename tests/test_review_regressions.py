@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 
 import pytest
 
@@ -210,7 +212,35 @@ def test_a_result_decided_by_4_26_d_names_its_effective_date(tmp_path):
 # The time budget reaches each provider's own network client
 # --------------------------------------------------------------------------
 
-def test_the_bedrock_client_gets_the_time_budget_and_no_retries():
+@pytest.fixture
+def network_attempts(monkeypatch):
+    """Record, and refuse, every name lookup and connection."""
+    attempts: list[str] = []
+
+    def refuse_lookup(host, *args, **kwargs):
+        attempts.append(f"getaddrinfo {host}")
+        raise socket.gaierror("network refused by test")
+
+    def refuse_connect(address, *args, **kwargs):
+        attempts.append(f"connect {address}")
+        raise OSError("network refused by test")
+
+    monkeypatch.setattr(socket, "getaddrinfo", refuse_lookup)
+    monkeypatch.setattr(socket, "create_connection", refuse_connect)
+    return attempts
+
+
+@pytest.fixture
+def no_aws_configuration(monkeypatch, tmp_path):
+    """No AWS configuration or credentials from this machine, and no instance-metadata probe."""
+    for key in [k for k in os.environ if k.startswith("AWS_")]:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-config"))
+
+
+def test_the_bedrock_client_gets_the_time_budget_and_no_retries(no_aws_configuration, network_attempts):
     from recheck.models.factory import ProviderConfig, build_model
 
     model = build_model(ProviderConfig("bedrock", "global.anthropic.claude-haiku-4-5", region="us-west-2",
@@ -218,6 +248,9 @@ def test_the_bedrock_client_gets_the_time_budget_and_no_retries():
     config = model.client.meta.config
     assert config.read_timeout == 7.0
     assert config.retries["total_max_attempts"] == 1  # one attempt, no retry
+    # RC-01: building the client must not go looking for credentials on the network
+    # (instance metadata at 169.254.169.254); the suite is network-free.
+    assert network_attempts == [], f"building the bedrock client used the network: {network_attempts}"
 
 
 def test_the_anthropic_client_gets_the_time_budget_and_no_retries(monkeypatch):
