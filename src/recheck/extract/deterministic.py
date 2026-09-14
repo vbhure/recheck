@@ -242,6 +242,10 @@ _PROSE_ANCHORS = (
     re.compile(r"\bis increased to\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bis continued as\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    # A 0 percent evaluation written without a percentage has no mark for the
+    # completeness check to count, so it was left out of the list silently.
+    re.compile(r"\bwith a\s+(?P<pct>noncompensable)\s+evaluation", re.I),
+    re.compile(r"\bis continued as\s+(?P<pct>noncompensable)\b", re.I),
 )
 
 # Words are separated by \s+, not a space: letters are hard-wrapped, and "Your
@@ -583,7 +587,8 @@ def _prose_rating(sentence: str) -> tuple[str, int, set[int], int] | None:
         for prior in _PRIOR_VALUE.finditer(span):
             if _AFTER_PRIOR.fullmatch(span, prior.end()):
                 accounted |= _marks(sentence, start + prior.start("pct"), start + prior.end())
-        return span, int(match.group("pct")), accounted, start
+        value = match.group("pct")
+        return span, 0 if value.isalpha() else int(value), accounted, start
     return None  # most specific anchor wins for a given sentence
 
 

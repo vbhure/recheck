@@ -275,3 +275,34 @@ def test_a_prose_rating_keeps_its_own_source_line_after_a_page_break():
     assert extraction.ok, extraction.unparsed_reason
     for rating in extraction.ratings:
         assert rating.condition in rating.source_line
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-6: "granted with a noncompensable evaluation" has no percent mark,
+# so the completeness check never saw it and the evaluation was left out of
+# the list the report prints as the evaluations in the letter.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Service connection for right knee scar is granted with a noncompensable evaluation effective January 9, 2026.",
+        "Evaluation of right knee scar is continued as noncompensable.",
+    ],
+)
+def test_a_noncompensable_evaluation_is_read_as_zero_percent(sentence):
+    extraction = parse(HEAD + "DECISION\n\n" + sentence + "\n\n"
+                       "Service connection for left knee strain is granted with an evaluation of 20 percent.\n\n"
+                       "Your combined evaluation for compensation is 20 percent.\n")
+    assert extraction.ok, extraction.unparsed_reason
+    assert [(r.condition, r.percent) for r in extraction.ratings] == [("right knee scar", 0), ("left knee strain", 20)]
+
+
+def test_a_noncompensable_stage_and_a_later_increase_are_refused_as_a_repeat():
+    # 12705f8 read only the 10 percent. A 0% stage is now a statement too, so the two are refused as any
+    # staged prose rating is ("rates ... more than once"), not read as one of them.
+    extraction = parse(HEAD + "DECISION\n\n"
+                       "Service connection for left knee strain is granted with a noncompensable evaluation.\n\n"
+                       "Evaluation of left knee strain is increased to 10 percent effective March 1, 2026.\n\n"
+                       "Your combined evaluation for compensation is 10 percent.\n")
+    assert not extraction.ok
