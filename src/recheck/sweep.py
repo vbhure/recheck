@@ -51,6 +51,8 @@ class Outcome:
     detail: str = ""
     interrupt: object | None = None
     reused: bool = False
+    #: reviewer answers a --fresh re-audit threw away, as they were on file
+    discarded_answers: dict | None = None
 
 
 def case_id_for(path: pathlib.Path) -> str:
@@ -214,6 +216,13 @@ def _audit_or_reuse(store, case_id, path, factory, run_audit, fresh) -> Outcome:
                 store.discard(case_id)
             except OSError as exc:
                 return Outcome(case_id, Outcome.FAILED, f"could not discard the case on file: {exc}")
+            if existing is not None and existing.human_answers:
+                # Said, not silent: `sweep --fresh` re-audits every case, and
+                # an answered case came back as an open question with nothing
+                # to show the reviewer's answer had ever been given.
+                outcome = run_audit(store, case_id, path, factory)
+                outcome.discarded_answers = dict(existing.human_answers)
+                return outcome
         else:
             # The case on file describes the letter as it was audited. If the
             # letter has changed since, its figures describe a document that
@@ -270,6 +279,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
     immaterial_cases = 0
     questions_asked = 0
     reused = sum(1 for o in outcomes if o.reused)
+    answered_on_file = 0
 
     for outcome in outcomes:
         if outcome.state == Outcome.FAILED:
@@ -308,6 +318,7 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
         sides_from_letter += sides
         immaterial_cases += bool(case.immaterial_unknowns)
         questions_asked += case.has_trace_action(QUESTION_ACTION)
+        answered_on_file += bool(outcome.reused and case.human_answers)
         bucket.append((case, lines))
 
     out: list[str] = [BAR, f"CASELOAD TRIAGE  -  {len(outcomes)} document(s)", BAR, ""]
@@ -357,7 +368,14 @@ def render_triage(store: CaseStore, outcomes: list[Outcome], *, store_flag: str 
                f"{sides_from_letter}.  arithmetic: all deterministic")
     if reused:
         out.append(f"{reused} case(s) were already on file and are shown as they stand; "
-                   f"add --fresh to re-audit them")
+                   f"add --fresh to re-audit them"
+                   + (f" (this discards the reviewer answers on file for {answered_on_file} case(s))"
+                      if answered_on_file else ""))
+    discarded = [o for o in outcomes if o.discarded_answers]
+    if discarded:
+        out.append(f"--fresh discarded the reviewer answers on file for {len(discarded)} case(s): "
+                   + "; ".join(f"{o.case_id} ({','.join(f'{k}={v}' for k, v in o.discarded_answers.items())})"
+                               for o in discarded))
     out.append(BAR)
     return "\n".join(out)
 

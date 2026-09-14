@@ -108,3 +108,27 @@ def test_a_classification_fixture_that_is_not_an_object_is_refused_without_a_tra
                         "--classifications", fixture, store=tmp_path / "runs")
     assert code == EXIT_CANNOT_PROCEED
     assert "must be a JSON object" in err
+
+
+# ---------------------------------------------------------------------------
+# sweep --fresh and the reviewer's answers on file
+# ---------------------------------------------------------------------------
+
+def test_sweep_fresh_says_which_reviewer_answers_it_discards(tmp_path):
+    """The triage offered --fresh, and --fresh silently turned an answered case back into an open question."""
+    import shutil
+
+    store = tmp_path / "runs"
+    folder = tmp_path / "letters"
+    folder.mkdir()
+    shutil.copy(LETTERS / "07_clinical_terms.txt", folder / "answered.txt")
+    assert main("sweep", folder, store=store)[0] == EXIT_AWAITING_HUMAN
+    assert main("resume", "--case", "answered", "--answer", "1=upper,2=upper", store=store)[0] == EXIT_OK
+
+    code, out, _ = main("sweep", folder, store=store)
+    assert code == EXIT_OK
+    assert "discards the reviewer answers on file for 1 case(s)" in " ".join(out.split())
+
+    code, out, _ = main("sweep", folder, "--fresh", store=store)
+    assert code == EXIT_AWAITING_HUMAN
+    assert "--fresh discarded the reviewer answers on file for 1 case(s): answered (1=upper-left,2=upper-right)" in out
