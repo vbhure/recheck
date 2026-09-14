@@ -201,7 +201,11 @@ class _InvisibleText:
         if operator == b"q":
             self.saved.append(self.mode)
         elif operator == b"Q":
-            self.mode = self.saved.pop() if self.saved else 0
+            # A Q with nothing saved restores nothing: pdf.js, MuPDF and PDFium
+            # ignore it and keep drawing invisibly. Resetting to 0 here read
+            # "3 Tr Q (80%) Tj" as visible text.
+            if self.saved:
+                self.mode = self.saved.pop()
         elif operator == b"Do":
             self.forms.append((len(self.saved), self.mode))
         elif operator == b"Tr" and operands:

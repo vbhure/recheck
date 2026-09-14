@@ -322,3 +322,15 @@ def test_a_pdf_that_makes_pypdf_log_thousands_of_warnings_replays_a_bounded_numb
     replayed = [r for r in caplog.records if r.name.startswith("pypdf")]
     assert 1 < len(replayed) <= 21, len(replayed)
     assert "more" in replayed[-1].getMessage()
+
+
+def test_an_unmatched_restore_does_not_make_invisible_text_visible(tmp_path):
+    """Skeptic follow-up to FILES-2: a Q with nothing saved restores nothing
+    (viewers ignore it), so text after "3 Tr Q" is still not drawn. The
+    tracker reset the mode to 0 and read the hidden letter at exit 0."""
+    lines = TABULAR.splitlines()
+    for prefix in (b"3 Tr Q ", b"BT 7 Tr ET Q Q "):
+        path = tmp_path / "unmatched.pdf"
+        path.write_bytes(_one_page(prefix + b"BT /F1 9 Tf 20 800 Td 12 TL " + _show(lines) + b" ET"))
+        with pytest.raises(ScannedDocument, match="not drawn on the page"):
+            read_document(path)
