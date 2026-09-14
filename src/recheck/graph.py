@@ -847,7 +847,8 @@ def _path_limit() -> int | None:
 
 
 def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "none") -> Case:
-    """Create the case a new audit writes into. Callers discard any old one first.
+    """Create the case a new audit writes into. Callers discard any old case first;
+    a Strands session left behind without its case file is discarded here.
 
     Refuses, before writing anything, a case whose session files would not
     fit the platform's path limit. Found out later, the session write failed
