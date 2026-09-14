@@ -483,7 +483,8 @@ def build_model(config: ProviderConfig) -> Any:
     # The wall-clock budget in recheck.classify cancels the call, but a client
     # blocked in a socket read can hold the process open after that. So the
     # same budget is given to each provider's own client, with retries off:
-    # one call per letter means one attempt.
+    # one call per letter means one attempt. (The Strands Agent's own retry
+    # is turned off in build_agent_factory.)
     if config.provider == "bedrock":
         from botocore.config import Config
 
@@ -550,6 +551,13 @@ def build_agent_factory(
             model=build_model(config),
             system_prompt=SYSTEM_PROMPT,
             callback_handler=None,  # framework chatter is not product output
+            # One call per letter means one attempt at the Agent too. By
+            # default a Strands Agent retries a throttled model call itself
+            # (ModelRetryStrategy: six attempts, 4 s, 8 s, 16 s ... apart),
+            # whatever the client's retry setting: a throttled letter made
+            # four calls and ended "did not answer within 30s". None is
+            # Strands' "no retries" (max_attempts=1).
+            retry_strategy=None,
         )
 
     make.config = config  # type: ignore[attr-defined]

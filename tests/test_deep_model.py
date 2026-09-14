@@ -50,6 +50,45 @@ def _unlisted_rating(name: str = UNLISTED) -> ExtractedRating:
 
 
 # --------------------------------------------------------------------------
+# MODEL-1: the production Agent retried a throttled model call itself
+# --------------------------------------------------------------------------
+
+class _Throttled(ScriptedModel):
+    """A provider answering every request with a throttle (Bedrock ThrottlingException, Anthropic 429)."""
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        self.calls.append({"tool": None, "messages": messages, "system_prompt": system_prompt})
+        raise ModelThrottledException("Rate exceeded")
+        yield  # pragma: no cover - makes this an async generator
+
+
+def test_a_throttled_provider_is_called_once_per_letter_not_retried_by_the_agent(monkeypatch):
+    """One call per letter means one attempt. The provider clients were built
+    with retries off, but the Strands Agent build_agent_factory made kept its
+    default ModelRetryStrategy (six attempts, 4 s, 8 s, 16 s apart): a
+    throttled letter made 2 calls in a 6 s budget, 4 in the default 30 s, and
+    was reported as "did not answer within 30s"."""
+    models: list[_Throttled] = []
+
+    def throttled_model(config):
+        models.append(_Throttled(payload=batch(item(UNLISTED, "upper"))))
+        return models[-1]
+
+    monkeypatch.setattr(factory_module, "preflight", lambda config: [Check("stub", True, "")])
+    monkeypatch.setattr(factory_module, "build_model", throttled_model)
+    make = build_agent_factory("bedrock", env={"RECHECK_REGION": "us-west-2", "RECHECK_TIMEOUT_S": "6"})
+
+    start = time.monotonic()
+    decision = classify([_unlisted_rating()], Trace(), make)[0]
+    elapsed = time.monotonic() - start
+
+    assert sum(len(m.calls) for m in models) == 1, "a throttled call was retried"
+    assert decision.extremity_group == "unknown" and decision.group_by is None
+    assert decision.note == "the model call failed (ModelThrottledException)"
+    assert elapsed < 4.0, f"a refused call held the letter for {elapsed:.1f}s"
+
+
+# --------------------------------------------------------------------------
 # MODEL-4: audit --fresh discarded the case before the classifier was resolved
 # --------------------------------------------------------------------------
 
