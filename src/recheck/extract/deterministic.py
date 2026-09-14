@@ -198,7 +198,10 @@ LEXICON_SIZE = (
 # it did read (REASONS FOR DECISION often repeats the decision) is fine.
 STOP_HEADINGS = ("REASONS FOR DECISION", "EVIDENCE", "REFERENCES")
 _STOP_HEADING = re.compile(
-    r"^[ \t]*(?:" + "|".join(STOP_HEADINGS) + r")[ \t]*:?[ \t]*$", re.I | re.M
+    # "[ \t]*(?::[ \t]*)?$", not "[ \t]*:?[ \t]*$": two runs of the same
+    # whitespace around an optional colon are retried at every split, which is
+    # quadratic in a long run of spaces after the heading.
+    r"^[ \t]*(?:" + "|".join(STOP_HEADINGS) + r")[ \t]*(?::[ \t]*)?$", re.I | re.M
 )
 
 # One numbered row, on one line. Whitespace is [^\S\n] (any space but a line
@@ -207,9 +210,12 @@ _STOP_HEADING = re.compile(
 # 20,000 blank lines took ten seconds. The name must end in a character that
 # is neither a dot nor a space (optionally followed by one dot, "etc."), so
 # the leader cannot be retried from every dot or space of a long run: a row
-# with 20,000 leader dots and no percentage took a minute.
+# with 20,000 leader dots and no percentage took a minute. The name must also
+# START with a non-space: the spaces before it could otherwise be shared out
+# between the pattern's leading whitespace and the name in every possible
+# way, and "1." followed by 80,000 spaces took over four minutes.
 _ROW_TAIL = (
-    r"(?P<condition>[^\n]*?[^.\s]\.?)[^\S\n]*\.{3,}[^\S\n]*(?P<pct>\d{1,3})[^\S\n]*%"
+    r"(?P<condition>(?=\S)[^\n]*?[^.\s]\.?)[^\S\n]*\.{3,}[^\S\n]*(?P<pct>\d{1,3})[^\S\n]*%"
 )
 _TABULAR = re.compile(r"^[^\S\n]*(?P<row>\d+)\.[^\S\n]*" + _ROW_TAIL, re.MULTILINE)
 # Every line that starts like a numbered row. The contiguity check compares
@@ -238,7 +244,9 @@ _PROSE_ANCHORS = (
 )
 
 _COMBINED = [
-    re.compile(r"COMBINED EVALUATION FOR COMPENSATION\s*:?\s*(\d{1,3})\s*%", re.I),
+    # One whitespace run on each side of the optional colon (see _STOP_HEADING):
+    # "\s*:?\s*" took 8 s on 10,000 blank lines after the phrase.
+    re.compile(r"COMBINED EVALUATION FOR COMPENSATION\s*(?::\s*)?(\d{1,3})\s*%", re.I),
     re.compile(r"combined evaluation for compensation is\s+(\d{1,3})\s+percent", re.I),
 ]
 # "Your previous combined evaluation for compensation is 30 percent" is
@@ -303,7 +311,7 @@ _HEADING_WORD = re.compile(
     r"INTRODUCTION|CONCLUSIONS?|FINDINGS?|BACKGROUND|ANALYSIS)\b|\*\*\*"
 )
 _PARENTHETICAL_LINE = re.compile(
-    r"^\s*(?:\([^()\n]*\)|(?:DC|diagnostic codes?)\s*\d{4}(?:\s*[-/]\s*\d{4})*)\s*[.,;]?\s*$", re.I
+    r"^\s*(?:\([^()\n]*\)|(?:DC|diagnostic codes?)\s*\d{4}(?:\s*[-/]\s*\d{4})*)\s*(?:[.,;]\s*)?$", re.I
 )
 _SENTENCE_END = re.compile(r"[.;!?][)\"'\]]*$")
 # Words a wrapped sentence can end a line on and carry on after: "Service
