@@ -9,6 +9,9 @@
   HITL   Defence in depth: the assess node took the first interruptResponse in
          its task, whatever interrupt it answered. It now takes only a response
          to this case's own interrupt id.
+  CL-03  The --scripted Agent kept Strands' default retry strategy (6 attempts)
+         while the README says the Agent's own retry is off; only the --model
+         Agent passed retry_strategy=None.
 """
 
 from __future__ import annotations
@@ -175,3 +178,23 @@ def test_control_the_assess_node_takes_a_response_to_its_own_interrupt(tmp_path)
     _assess_with(store, "p", interrupt_id("p"), {"2": "left"})
     case = CaseStore(store).load("p")
     assert case.status == "ready" and case.human_answers == {"2": "lower-left"}
+
+
+# --------------------------------------------------------------------------
+# CL-03: the --scripted Agent does not retry either
+# --------------------------------------------------------------------------
+
+def test_the_scripted_agent_makes_one_attempt_like_the_provider_agent(tmp_path):
+    """README: "turns=1, and the Strands Agent's own retry is off". Only the
+    --model factory passed retry_strategy=None; the --scripted Agent took
+    Strands' default ModelRetryStrategy (6 attempts). None is Strands' "no
+    retries" (max_attempts=1), for both fixture shapes."""
+    from recheck.cli import _scripted_factory
+
+    batch_fixture = tmp_path / "batch.json"
+    batch_fixture.write_text('{"classifications": []}', encoding="utf-8")
+    map_fixture = tmp_path / "map.json"
+    map_fixture.write_text('{"anatomy": {"zorblatt": "lower"}, "confidence": 0.9}', encoding="utf-8")
+    for fixture in (None, batch_fixture, map_fixture):
+        agent = _scripted_factory(fixture)()
+        assert agent._retry_strategy._max_attempts == 1, fixture

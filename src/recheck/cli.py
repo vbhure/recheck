@@ -144,14 +144,16 @@ def _scripted_factory(fixture: pathlib.Path | None):
 
         def make():
             return Agent(model=ScriptedModel(responder=responder),
-                         system_prompt=SYSTEM_PROMPT, callback_handler=None)
+                         system_prompt=SYSTEM_PROMPT, callback_handler=None, retry_strategy=None)
 
         return make
 
     def make():
         # callback_handler=None suppresses Strands' default stdout handler,
         # which otherwise prints tool chatter into the middle of the report.
-        return Agent(model=ScriptedModel(payload=payload), system_prompt=SYSTEM_PROMPT, callback_handler=None)
+        # retry_strategy=None: one attempt, as the provider Agent makes (models/factory.py).
+        return Agent(model=ScriptedModel(payload=payload), system_prompt=SYSTEM_PROMPT, callback_handler=None,
+                     retry_strategy=None)
 
     return make
 
