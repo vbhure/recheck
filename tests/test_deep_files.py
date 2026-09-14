@@ -28,12 +28,17 @@ which say so.
   FILES-6  A control character in a condition name (ESC) reached the terminal
            raw: "ESC[8m" concealed every following line of the report,
            verdict included, and cursor controls can overwrite printed figures.
+  FILES-7  Every warning pypdf logged in the PDF child was replayed in the
+           parent. A 271 KB PDF with a deeply nested junk dictionary printed
+           44,264 warning lines (5.9 MB) to stderr before its report, burying
+           it and a sweep's triage.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import logging
 
 import pytest
 
@@ -291,3 +296,29 @@ def test_a_control_character_in_a_condition_name_is_refused(tmp_path, control):
     assert code == EXIT_CANNOT_PROCEED and "control character" in out + err
     assert control not in out + err
     assert case_json(tmp_path / "runs", "ctl")["status"] == "unparsed"
+
+
+# --------------------------------------------------------------------------
+# FILES-7: a PDF that makes pypdf log thousands of warnings
+# --------------------------------------------------------------------------
+
+def test_a_pdf_that_makes_pypdf_log_thousands_of_warnings_replays_a_bounded_number(tmp_path, caplog):
+    """Before: 1,881 records replayed for this 28 KB file (44,264 lines at depth 30,000)."""
+    depth = 3000
+    content = b"BT /F1 9 Tf 20 800 Td 12 TL " + _show(TABULAR.splitlines()) + b" ET"
+    junk = b"<< /A " * depth + b"1" + b" >>" * depth
+    path = tmp_path / "noisy.pdf"
+    path.write_bytes(_pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Junk " + junk + b" >>",
+        _stream(content),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+    ]))
+    with caplog.at_level(logging.WARNING):
+        text = read_document(path)
+    assert "COMBINED EVALUATION FOR COMPENSATION: 70%" in text
+    replayed = [r for r in caplog.records if r.name.startswith("pypdf")]
+    assert 1 < len(replayed) <= 21, len(replayed)
+    assert "more" in replayed[-1].getMessage()

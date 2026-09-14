@@ -110,13 +110,24 @@ def extract(data: bytes, name: str, limits: Limits, seconds: float) -> Outcome:
 
 
 class _Collect(logging.Handler):
-    """Keeps the child's log records (pypdf's warnings about a malformed file)."""
+    """Keeps the child's log records (pypdf's warnings about a malformed file), up to LIMIT.
+
+    All of them were replayed: a 271 KB PDF with a deeply nested junk
+    dictionary printed 44,264 warning lines (5.9 MB) before its report. The
+    rest are counted, and one record says how many were not shown.
+    """
+
+    LIMIT = 20
 
     def __init__(self) -> None:
         super().__init__()
         self.records: list[logging.LogRecord] = []
+        self.dropped = 0
 
     def emit(self, record: logging.LogRecord) -> None:
+        if len(self.records) >= self.LIMIT:
+            self.dropped += 1
+            return
         # Flattened as logging.handlers.QueueHandler does, so it pickles.
         record.msg, record.args, record.exc_info, record.exc_text = record.getMessage(), None, None, None
         self.records.append(record)
@@ -152,6 +163,11 @@ def _serve(request: dict) -> None:
         kind, value = read(request["data"], request["name"], Limits(**request["limits"]))
     except Exception as exc:  # noqa: BLE001 - reported to the parent, which re-raises it
         kind, value = "error", exc
+    if collect.dropped:
+        collect.records.append(logging.makeLogRecord({
+            "name": "pypdf", "levelno": logging.WARNING, "levelname": "WARNING",
+            "msg": f"{collect.dropped:,} more pypdf warnings about {request['name']} not shown",
+        }))
     try:
         payload = pickle.dumps((kind, value, collect.records))
     except Exception as exc:  # noqa: BLE001 - an exception or record that does not pickle
