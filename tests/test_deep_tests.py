@@ -71,6 +71,30 @@ def test_an_impossible_fact_on_an_open_case_is_refused(tmp_path, field, value):
         store.load("pair")
 
 
+@pytest.mark.parametrize("value", ["ten", 150])
+def test_an_impossible_percent_edited_consistently_is_refused_not_a_traceback(tmp_path, value):
+    """Mutation load_percent_value (cross-lane red team XC-1). The tamper test in
+    test_review_regressions edits decisions[1].percent alone, so the check that
+    the facts match the ratings and trace extracted from the letter refuses the
+    file first and the value check is never reached. Edited consistently - the
+    ratings emptied and the 'Extracted rating' trace entries removed - only the
+    value check stands between "ten" and a TypeError in `show`."""
+    store = _open_case(tmp_path)
+
+    def tamper(raw):
+        raw["decisions"][1]["percent"] = value
+        raw["ratings"] = []
+        raw["trace"] = [e for e in raw["trace"] if e.get("action") != "Extracted rating"]
+
+    _edit(tmp_path, tamper)
+    with pytest.raises(CaseCorrupt, match="impossible percent"):
+        store.load("pair")
+    code, out, err = main("show", "--case", "pair", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "impossible percent" in err
+    assert "Traceback" not in out + err
+
+
 # --------------------------------------------------------------------------
 # An answer that exists only after the budget is not used, whatever path it took
 # --------------------------------------------------------------------------
