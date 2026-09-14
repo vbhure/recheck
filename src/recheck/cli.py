@@ -244,12 +244,18 @@ def cmd_audit(args) -> int:
         return EXIT_CANNOT_PROCEED
     try:
         with store.lock(args.case):
+            if store.exists(args.case) and not args.fresh:
+                print(f"[recheck] case {args.case} already exists. Use `recheck{_store_flag(args)} show --case "
+                      f"{args.case}` to see it, `resume` to answer its question, or add --fresh to "
+                      f"discard it and audit again.", file=sys.stderr)
+                return EXIT_CANNOT_PROCEED
+            # The classifier is resolved before anything is discarded. It
+            # refuses a provider that is not ready, or a fixture that does not
+            # load, and resolved after the discard that refusal came too late:
+            # `audit --fresh --model <provider>` deleted an answered, complete
+            # case and then audited nothing.
+            factory, note, label = _resolve_factory(args)
             if store.exists(args.case):
-                if not args.fresh:
-                    print(f"[recheck] case {args.case} already exists. Use `recheck{_store_flag(args)} show --case "
-                          f"{args.case}` to see it, `resume` to answer its question, or add --fresh to "
-                          f"discard it and audit again.", file=sys.stderr)
-                    return EXIT_CANNOT_PROCEED
                 try:
                     store.discard(args.case)
                 except OSError as exc:
@@ -257,7 +263,6 @@ def cmd_audit(args) -> int:
                           file=sys.stderr)
                     return EXIT_CANNOT_PROCEED
 
-            factory, note, label = _resolve_factory(args)
             print(f"[recheck] {note}")
             outcome = _run_audit(store, args.case, source, factory, label)
             return _finish(args, store, outcome)
