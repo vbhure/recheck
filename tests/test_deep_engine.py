@@ -3,6 +3,8 @@ independent 38 CFR 4.25 / 4.26 oracle."""
 
 from __future__ import annotations
 
+import pytest
+
 from _support import case_json, main, tabular_letter
 from recheck.cfr.combine import combine, final_degree
 from recheck.cfr.rating import Paired, evaluate
@@ -88,3 +90,22 @@ def test_a_both_sides_evaluation_kept_out_of_the_factor_is_not_blamed_on_426c(tm
     notes = [e["detail"] for e in c["trace"] if e["action"] == "Note"]
     assert notes, "precondition: the established-facts derivation carries a note"
     assert not any(n.startswith("4.26(c)") and "both lower" in n for n in notes), notes
+
+
+@pytest.mark.parametrize("ratings,paired", [
+    ([40, 24.9], None),                                   # was truncated to 24: 50% instead of refusing
+    ([15.7], None),                                       # was truncated to 15
+    ([True, 10], None),                                   # a bool is not a percentage
+    (["40"], None),                                       # text is not a percentage
+    ([-10], None),                                        # refused, but as an impossible COMBINED value
+    ([10, 10], [Paired(10, "arm", "left"), Paired(10, "arm", "right")]),       # silently no factor
+    ([10, 10], [Paired(10, "upper", "north"), Paired(10, "upper", "south")]),  # silently no factor
+])
+def test_the_engine_refuses_what_is_not_a_whole_percentage_of_an_arm_or_leg(ratings, paired):
+    with pytest.raises(ValueError, match="whole percentage|arm or leg"):
+        evaluate(ratings, paired=paired)
+
+
+def test_the_engine_still_takes_every_whole_percentage():
+    for value in range(0, 101):
+        assert evaluate([value]).final_degree == final_degree(value)

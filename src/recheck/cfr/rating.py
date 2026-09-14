@@ -187,6 +187,18 @@ def _fold(ratings: Sequence[int], label: str) -> tuple[int, list[Step]]:
     return running, steps
 
 
+def _percentage(value: object) -> int:
+    """A rating as this engine takes it: a whole percentage from 0 to 100.
+
+    Coercing with int() silently turned 24.9 into 24 (40 and 24.9 gave 50%,
+    not 60%) and True into 1; an unknown extremity or side dropped a
+    disability from the factor without a word. Refused instead.
+    """
+    if type(value) is not int or not 0 <= value <= 100:
+        raise ValueError(f"a rating must be a whole percentage from 0 to 100, got {value!r}")
+    return value
+
+
 def _remove_all(ratings: Sequence[int], members: Sequence[int]) -> list[int]:
     """`ratings` minus `members` as multisets. Raises if members are not a subset."""
     remaining = list(ratings)
@@ -257,7 +269,7 @@ def evaluate(
             `ratings`, if both arguments are given, or if there are more arm
             and leg disabilities than the 4.26(d) search is verified for.
     """
-    ratings = [int(r) for r in ratings]
+    ratings = [_percentage(r) for r in ratings]
     if paired is not None and bilateral_pair is not None:
         raise ValueError("pass either `paired` or `bilateral_pair`, not both")
     if bilateral_pair is not None:
@@ -265,9 +277,13 @@ def evaluate(
             raise ValueError(f"a bilateral pair has exactly 2 ratings, got {len(bilateral_pair)}")
         # The extremity label is immaterial to the arithmetic; one pair of
         # extremities with a disability on each side is what matters.
-        paired = [Paired(int(bilateral_pair[0]), "upper", "left"),
-                  Paired(int(bilateral_pair[1]), "upper", "right")]
+        paired = [Paired(_percentage(bilateral_pair[0]), "upper", "left"),
+                  Paired(_percentage(bilateral_pair[1]), "upper", "right")]
     paired = list(paired or [])
+    for p in paired:
+        _percentage(p.percent)
+        if p.extremity not in EXTREMITIES or p.side not in (*SIDES, "both"):
+            raise ValueError(f"not an arm or leg disability with a side: {p!r}")
     _remove_all(ratings, [p.percent for p in paired])  # validate membership
 
     plain_value, plain_steps = _fold(ratings, "all ratings, no bilateral factor")
