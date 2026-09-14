@@ -1,7 +1,7 @@
 """Recheck command line.
 
-    recheck sweep     <directory> [--scripted | --model PROVIDER] [--fresh]
-    recheck audit     <letter> --case ID [--scripted | --model PROVIDER] [--fresh]
+    recheck sweep     <directory> [--scripted --classifications FIXTURE | --model PROVIDER] [--fresh]
+    recheck audit     <letter> --case ID [--scripted --classifications FIXTURE | --model PROVIDER] [--fresh]
     recheck resume    --case ID --answer "2=left,3=right"
     recheck resume    --case ID          (finish a case whose answers are on file)
     recheck show      --case ID
@@ -163,9 +163,16 @@ def _resolve_factory(args) -> tuple[object | None, str, str]:
     if getattr(args, "scripted", False):
         fixture = pathlib.Path(args.classifications) if args.classifications else None
         label = f"scripted: {fixture.as_posix() if fixture else 'empty fixture'}"
-        return (_scripted_factory(fixture),
-                "zero-model path: AI classifications are replayed from a committed fixture through "
-                "Strands' real structured-output path; no network, no inference cost", label)
+        if fixture is None:
+            # There is nothing to replay: every name outside the lexicon gets
+            # an empty answer, which is discarded. Saying a fixture was
+            # replayed, then that the model output was invalid, misled.
+            note = ("zero-model path with no --classifications fixture: no model is called, and names "
+                    "outside the lexicon are left unknown")
+        else:
+            note = ("zero-model path: AI classifications are replayed from a committed fixture through "
+                    "Strands' real structured-output path; no network, no inference cost")
+        return _scripted_factory(fixture), note, label
     if getattr(args, "model", None):
         from recheck.models.factory import build_agent_factory
 

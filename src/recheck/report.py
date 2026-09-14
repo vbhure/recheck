@@ -153,6 +153,8 @@ def verdict(case: Case, *, question_open: bool = True) -> tuple[str, str]:
 
 def classifier_note(case: Case) -> str:
     label = case.classifier or "none"
+    if label == "scripted: empty fixture":
+        return "zero-model path with no fixture - no model was called; names outside the lexicon are left unknown"
     if label.startswith("scripted"):
         return f"AI decisions replayed from a committed fixture ({label.split(':', 1)[-1].strip()}) - no model was called"
     if label == "none":

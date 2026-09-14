@@ -260,6 +260,22 @@ def test_scripted_without_a_fixture_is_still_the_empty_fixture(tmp_path):
     assert case_json(tmp_path / "runs", "e")["classifier"] == "scripted: empty fixture"
 
 
+def test_scripted_without_a_fixture_does_not_claim_to_replay_one(tmp_path):
+    """CL-11: with no --classifications the run said AI classifications "are
+    replayed from a committed fixture", then blamed invalid model output for
+    every name outside the lexicon; `recheck --help` offered --scripted with
+    no fixture. It now says no fixture was given, and the usage names one."""
+    import recheck.cli as cli_module
+
+    letter = tabular_letter(tmp_path / "e.txt", [("Right knee strain", 20), ("Tinnitus", 10)], stated=30)
+    code, out, err = main("audit", letter, "--case", "e", "--scripted", store=tmp_path / "runs")
+    assert code == EXIT_OK
+    assert "replayed from a committed fixture" not in out + err
+    assert "no --classifications fixture" in out + err
+    usage = [line for line in cli_module.__doc__.splitlines() if "--scripted" in line]
+    assert usage and all("--scripted --classifications FIXTURE" in line for line in usage)
+
+
 # --------------------------------------------------------------------------
 # MODEL-6: a confidence just below the floor was shown as the floor
 # --------------------------------------------------------------------------
