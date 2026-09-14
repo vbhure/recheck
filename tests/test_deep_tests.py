@@ -8,15 +8,19 @@ without it; the mutation is named in each docstring.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
+from strands.multiagent.base import Status
 
 from _support import UNLISTED, batch, item, run_audit, scripted, tabular_letter
 from recheck import classify as classify_module
-from recheck.case import CaseCorrupt
+from recheck.case import CaseCorrupt, CaseStore
 from recheck.classify import classify
 from recheck.extract.deterministic import ExtractedRating
+from recheck.graph import ClassifyNode, ComputeNode, ExtractNode, open_case
+from recheck.materiality import assess
 from recheck.provenance import Actor, Trace
 
 PAIR = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20),
@@ -82,3 +86,35 @@ def test_an_answer_returned_after_the_deadline_is_not_used_even_if_the_budget_wr
     assert decision.extremity_group == "unknown" and decision.group_by is None
     assert "did not answer within 5s" in (decision.note or "")
     assert not trace.by_actor(Actor.AI)
+
+
+# --------------------------------------------------------------------------
+# The compute node's status check, on facts that would settle a result
+# --------------------------------------------------------------------------
+
+SETTLED = [("Post-traumatic stress disorder", 60), ("Right knee strain", 20), ("Left knee strain", 10),
+           ("Tinnitus", 10)]
+
+
+@pytest.mark.parametrize("status", ["open", "extracted", "classified", "awaiting_human", "undetermined", "unparsed"])
+def test_the_compute_node_refuses_a_case_that_is_not_ready_even_when_its_facts_are_settled(tmp_path, status):
+    """Mutation compute_status_gate. test_safety_gate's version of this test
+    uses a letter whose unknown side matters, so the node's second check (the
+    facts must settle a result) refused it too, and deleting the status check
+    left it passing. Here assess never ran: extract and classify established
+    every fact, and the status alone says the case may not be computed."""
+    store = CaseStore(tmp_path / "runs")
+    letter = tabular_letter(tmp_path / "settled.txt", SETTLED, stated=70)
+    open_case(store, "s", str(letter))
+    asyncio.run(ExtractNode(store, "s", str(letter)).invoke_async("extract"))
+    asyncio.run(ClassifyNode(store, "s", None).invoke_async("classify"))
+    case = store.load("s")
+    assert case.status == "classified" and assess(case.load_decisions()).settled  # precondition
+    case.status = status
+    store.save(case)
+
+    result = asyncio.run(ComputeNode(store, "s").invoke_async("compute"))
+    after = store.load("s")
+    assert result.status == Status.FAILED
+    assert after.status == status and after.recomputed_degree is None
+    assert "Arithmetic REFUSED" in [e["action"] for e in after.trace]
