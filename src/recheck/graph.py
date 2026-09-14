@@ -830,6 +830,15 @@ def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "no
             f"the store path and case id are too long for Windows: this case's session files need a "
             f"{len(deepest)}-character path and {limit} is the limit. Use a shorter --store or case id."
         )
+    # A new audit starts its graph at extract. Callers discard a case whose
+    # case.json exists, but a directory whose case.json is gone kept its
+    # Strands session, and build_graph restored it: a run that had stopped
+    # before assess continued there, extract and classify never ran on the new
+    # letter, and it was reported as computing 0% for a letter that "did not
+    # state a combined evaluation", exit 0. Without its case file the session
+    # can never be resumed, so nothing an answer rests on is lost.
+    if store.session_dir(case_id).exists():
+        store.discard(case_id)
     case = Case(case_id, str(source), classifier=classifier, status="open")
     store.save(case)
     return case

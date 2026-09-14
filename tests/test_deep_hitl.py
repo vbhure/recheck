@@ -8,6 +8,9 @@ Each test fails on 12705f8, the code before its fix.
           task was used instead: NO DISCREPANCY FOUND on facts the reviewer did
           not give, exit 0. Other edits dropped the answer silently (exit 2) or
           ran compute twice and left the answered case unreadable.
+  HITL-2  a case directory whose case.json was gone kept its Strands session, and
+          a new audit or sweep continued that session: extract and classify never
+          ran, and the letter was reported as computing 0%, exit 0.
 
 (HITL-3, a fact volunteered for a 0% rating re-asking the question, was already
 fixed on integ and is covered by tests/test_rt_verify.py RG11-REFINED-ZERO.)
@@ -115,3 +118,40 @@ def test_an_answer_written_into_a_genuinely_shaped_session_does_not_replace_the_
     case = CaseStore(store_root).load("c")
     assert code == EXIT_OK, err
     assert (case.recomputed_degree, case.human_answers) == (80, {"1": "lower-left", "2": "lower-right"})
+
+
+# ==========================================================================
+# HITL-2: a new audit never continues a session it did not start
+# ==========================================================================
+
+def _leave_a_session_stopped_before_assess(store_root: pathlib.Path, monkeypatch) -> None:
+    async def stopped(self, task, invocation_state=None, **kwargs):
+        raise RuntimeError("the process stopped here")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(graph.AssessNode, "invoke_async", stopped)
+        code, _, _ = main("audit", MISSING_SIDES, "--case", "c", store=store_root)
+    assert code == EXIT_CANNOT_PROCEED
+    (path,) = CaseStore(store_root).session_dir("c").rglob("multi_agent.json")
+    assert json.loads(path.read_text(encoding="utf-8"))["next_nodes_to_execute"] == ["assess"]
+    (store_root / "c" / "case.json").unlink()
+
+
+@pytest.mark.parametrize("command", ["audit", "sweep"])
+def test_an_audit_starts_at_extract_even_when_an_old_session_is_left_behind(tmp_path, monkeypatch, command):
+    store_root = tmp_path / "runs"
+    _leave_a_session_stopped_before_assess(store_root, monkeypatch)
+    letters = tmp_path / "letters"
+    letter = letters / "c.txt"
+    letters.mkdir()
+    letter.write_bytes((LETTERS / "06_agrees.txt").read_bytes())  # states 70%, which its evaluations give
+
+    if command == "audit":
+        code, out, err = main("audit", letter, "--case", "c", store=store_root)
+    else:
+        code, out, err = main("sweep", letters, store=store_root)
+
+    case = CaseStore(store_root).load("c")
+    assert nodes_run(CaseStore(store_root), "c")[:2] == ["extract", "classify"]
+    assert case.stated_combined == 70 and case.ratings
+    assert (code, case.status, case.recomputed_degree) == (EXIT_OK, "complete", 70), (out, err)
