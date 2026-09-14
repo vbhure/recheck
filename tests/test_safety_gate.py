@@ -202,6 +202,19 @@ def test_a_session_edited_to_continue_at_compute_does_not_compute(tmp_path):
     assert case.recomputed_degree is None
     assert case.status == "awaiting_human"
     assert "NO DISCREPANCY FOUND" not in out and "POTENTIAL DISCREPANCY" not in out
+    # resume now refuses a session whose question is not waiting at assess
+    # before running any node (graph.outstanding_interrupt). compute's own
+    # check is still exercised: Strands is driven through the edited frontier
+    # directly, as a caller that skips that check would.
+    assert "compute" not in nodes_run(store, "pair")
+    import asyncio
+
+    restored = build_graph(store, "pair", str(letter), None)
+    (pending,) = restored._interrupt_state.interrupts.values()
+    asyncio.run(restored.invoke_async([{"interruptResponse": {"interruptId": pending.id, "response": {"2": "left"}}}]))
+    case = store.load("pair")
+    assert case.recomputed_degree is None
+    assert case.status == "awaiting_human"
     # Unconditional: if Strands ever stopped honouring the edited frontier this
     # test must fail loudly rather than pass without exercising the self-check.
     assert nodes_run(store, "pair")[-1] == "compute"

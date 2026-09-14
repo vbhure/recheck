@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import time
 from typing import Any, Sequence
 
 from strands.hooks import BeforeNodeCallEvent, HookProvider, HookRegistry
@@ -792,6 +793,36 @@ _STRANDS_TEMP_NAME = ".strands_" + "x" * 8 + ".tmp"
 _WINDOWS_MAX_PATH = 259
 
 
+class _SessionFiles(FileSessionManager):
+    """FileSessionManager whose session file reads and replacements are retried briefly.
+
+    On Windows a file another process has open cannot be replaced, and cannot
+    be opened while it is being replaced. case.json is read and written with
+    retries for exactly this (recheck.case); the session was not. Another
+    program holding multi_agent.json open for a moment - a `show`, a virus
+    scanner - made a resume fail part-way, and made `show` report that the
+    question could not be answered and must be re-audited with --fresh.
+    """
+
+    def _read_file(self, path: str) -> dict[str, Any]:
+        return _retry_sharing(lambda: FileSessionManager._read_file(self, path))
+
+    def _write_file(self, path: str, data: dict[str, Any]) -> None:
+        _retry_sharing(lambda: FileSessionManager._write_file(self, path, data))
+
+
+def _retry_sharing(operation):
+    """Run a file operation, retried for about a second while it is refused as in use."""
+    for attempt in range(40):
+        try:
+            return operation()
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.025)
+    raise AssertionError("unreachable")
+
+
 def deepest_session_path(store: CaseStore, case_id: str) -> str:
     """The longest path the graph writes for this case, as the OS will see it."""
     return os.path.join(
@@ -816,7 +847,8 @@ def _path_limit() -> int | None:
 
 
 def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "none") -> Case:
-    """Create the case a new audit writes into. Callers discard any old one first.
+    """Create the case a new audit writes into. Callers discard any old case first;
+    a Strands session left behind without its case file is discarded here.
 
     Refuses, before writing anything, a case whose session files would not
     fit the platform's path limit. Found out later, the session write failed
@@ -830,6 +862,15 @@ def open_case(store: CaseStore, case_id: str, source: str, classifier: str = "no
             f"the store path and case id are too long for Windows: this case's session files need a "
             f"{len(deepest)}-character path and {limit} is the limit. Use a shorter --store or case id."
         )
+    # A new audit starts its graph at extract. Callers discard a case whose
+    # case.json exists, but a directory whose case.json is gone kept its
+    # Strands session, and build_graph restored it: a run that had stopped
+    # before assess continued there, extract and classify never ran on the new
+    # letter, and it was reported as computing 0% for a letter that "did not
+    # state a combined evaluation", exit 0. Without its case file the session
+    # can never be resumed, so nothing an answer rests on is lost.
+    if store.session_dir(case_id).exists():
+        store.discard(case_id)
     case = Case(case_id, str(source), classifier=classifier, status="open")
     store.save(case)
     return case
@@ -853,7 +894,7 @@ def build_graph(store: CaseStore, case_id: str, source: str, agent_factory: Agen
     builder.set_graph_id("recheck")
     builder.set_hook_providers([NodeTimeline(store, case_id)])
     builder.set_session_manager(
-        FileSessionManager(session_id=SESSION_ID, storage_dir=str(store.session_dir(case_id)))
+        _SessionFiles(session_id=SESSION_ID, storage_dir=str(store.session_dir(case_id)))
     )
     return builder.build()
 
@@ -871,6 +912,17 @@ def outstanding_interrupt(graph: Any) -> Interrupt | None:
     nothing, so every later resume - correct answer or garbage - printed the
     same question again and changed nothing, forever. The graph must be
     INTERRUPTED with a node to continue at.
+
+    And that node must be the one that asked. Only assess raises Recheck's
+    question, after extract and classify completed, so a session is waiting on
+    it only in exactly that shape: one interrupt, raised by assess itself, with
+    nothing else to re-run. A session edited to route the question elsewhere
+    was resumed as it said: marked as raised by a hook, the reviewer's typed
+    answer never reached assess and an answer written into the session's task
+    was taken instead - "1=left,2=right" (80%) came out as the session's
+    left,left: NO DISCREPANCY FOUND at 70%, "the facts you supplied", exit 0.
+    Other edits dropped the answer silently or ran compute twice, which left
+    the answered case unreadable.
     """
     state = getattr(graph, "_interrupt_state", None)
     if state is None or not state.activated:
@@ -878,4 +930,19 @@ def outstanding_interrupt(graph: Any) -> Interrupt | None:
     graph_state = getattr(graph, "state", None)
     if graph_state is None or graph_state.status != Status.INTERRUPTED or not graph_state.interrupted_nodes:
         return None
-    return next(iter(state.interrupts.values()), None)
+    if len(state.interrupts) != 1:
+        return None
+    pending = next(iter(state.interrupts.values()))
+    context = state.context if isinstance(state.context, dict) else {}
+    routed = context.get("assess")
+    if (
+        {node.node_id for node in graph_state.interrupted_nodes} != {"assess"}
+        or {node.node_id for node in graph_state.completed_nodes} != {"extract", "classify"}
+        or graph_state.failed_nodes
+        or context.get("completed_nodes") != []
+        or not isinstance(routed, dict)
+        or routed.get("from_hook") is not False
+        or routed.get("interrupt_ids") != [pending.id]
+    ):
+        return None
+    return pending
