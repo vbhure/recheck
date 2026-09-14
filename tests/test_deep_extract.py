@@ -345,3 +345,30 @@ def test_an_abdominal_scar_linked_to_a_right_knee_is_not_in_the_bilateral_factor
     code, out, _ = main("audit", letter, "--case", "scar", "--brief", store=tmp_path / "runs")
     assert "POTENTIAL DISCREPANCY" not in out
     assert "side: right" not in out
+
+
+# --------------------------------------------------------------------------
+# EXTRACT-8: "Evaluation of X is increased from 10 percent to 30 percent" -
+# ordinary increase wording - was refused (COULD NOT READ THE LETTER, exit 3):
+# no anchor read it, so both of its percentages were unaccounted for.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sentence", [
+    "Evaluation of right knee strain is increased from 10 percent to 30 percent effective January 9, 2026.",
+    "Evaluation of right knee strain is increased from 10 to 30 percent.",
+    "Evaluation of right knee strain is increased from\n10 percent to 30\npercent.",
+])
+def test_an_increase_from_one_value_to_another_is_read(sentence):
+    extraction = parse(HEAD + "DECISION\n\n" + sentence + "\n\n"
+                       "Service connection for tinnitus is granted with an evaluation of 10 percent.\n\n"
+                       "Your combined evaluation for compensation is 40 percent.\n")
+    assert extraction.ok, extraction.unparsed_reason
+    assert [(r.condition, r.percent) for r in extraction.ratings] == [("right knee strain", 30), ("tinnitus", 10)]
+
+
+def test_an_increase_with_a_second_stage_is_still_refused():
+    # control: a third percentage is not part of the increase
+    extraction = parse(HEAD + "DECISION\n\nEvaluation of right knee strain is increased from 10 percent to 20 "
+                       "percent effective January 9, 2026, and to 30 percent effective March 1, 2026.\n\n"
+                       "Your combined evaluation for compensation is 30 percent.\n")
+    assert not extraction.ok

@@ -255,6 +255,10 @@ _TAIL_ROW = re.compile(r"[^\S\n]*(?:(?P<row>\d+)[.)][^\S\n]*)?" + _ROW_TAIL + r"
 # period took a minute to parse, and a megabyte would take hours.
 _PROSE_ANCHORS = (
     re.compile(r"\bis increased to\s+(?P<pct>\d{1,3})\s+percent", re.I),
+    # "is increased from 10 percent to 30 percent": the prior value inside the
+    # anchor is accounted for with it (see _prose_rating). Unread, the letter
+    # was refused.
+    re.compile(r"\bis increased from\s+\d{1,3}(?:\s+percent)?\s+to\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bis continued as\s+(?P<pct>\d{1,3})\s+percent", re.I),
     re.compile(r"\bwith an evaluation of\s+(?P<pct>\d{1,3})\s+percent", re.I),
     # A 0 percent evaluation written without a percentage has no mark for the
@@ -598,7 +602,7 @@ def _prose_rating(sentence: str) -> tuple[str, int, set[int], int] | None:
             continue
         start = sentence.rfind(".", 0, match.start()) + 1
         span = sentence[start:match.start()]
-        accounted = _marks(sentence, match.start("pct"), match.end())
+        accounted = _marks(sentence, match.start(), match.end())
         for prior in _PRIOR_VALUE.finditer(span):
             if _AFTER_PRIOR.fullmatch(span, prior.end()):
                 accounted |= _marks(sentence, start + prior.start("pct"), start + prior.end())
