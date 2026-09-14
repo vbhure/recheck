@@ -871,6 +871,17 @@ def outstanding_interrupt(graph: Any) -> Interrupt | None:
     nothing, so every later resume - correct answer or garbage - printed the
     same question again and changed nothing, forever. The graph must be
     INTERRUPTED with a node to continue at.
+
+    And that node must be the one that asked. Only assess raises Recheck's
+    question, after extract and classify completed, so a session is waiting on
+    it only in exactly that shape: one interrupt, raised by assess itself, with
+    nothing else to re-run. A session edited to route the question elsewhere
+    was resumed as it said: marked as raised by a hook, the reviewer's typed
+    answer never reached assess and an answer written into the session's task
+    was taken instead - "1=left,2=right" (80%) came out as the session's
+    left,left: NO DISCREPANCY FOUND at 70%, "the facts you supplied", exit 0.
+    Other edits dropped the answer silently or ran compute twice, which left
+    the answered case unreadable.
     """
     state = getattr(graph, "_interrupt_state", None)
     if state is None or not state.activated:
@@ -878,4 +889,19 @@ def outstanding_interrupt(graph: Any) -> Interrupt | None:
     graph_state = getattr(graph, "state", None)
     if graph_state is None or graph_state.status != Status.INTERRUPTED or not graph_state.interrupted_nodes:
         return None
-    return next(iter(state.interrupts.values()), None)
+    if len(state.interrupts) != 1:
+        return None
+    pending = next(iter(state.interrupts.values()))
+    context = state.context if isinstance(state.context, dict) else {}
+    routed = context.get("assess")
+    if (
+        {node.node_id for node in graph_state.interrupted_nodes} != {"assess"}
+        or {node.node_id for node in graph_state.completed_nodes} != {"extract", "classify"}
+        or graph_state.failed_nodes
+        or context.get("completed_nodes") != []
+        or not isinstance(routed, dict)
+        or routed.get("from_hook") is not False
+        or routed.get("interrupt_ids") != [pending.id]
+    ):
+        return None
+    return pending
