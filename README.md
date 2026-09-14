@@ -111,7 +111,7 @@ Code owns every number, every side and all arithmetic. AI owns one judgment: whe
 Python 3.10 or later. No AWS account, no API key, no network.
 
 ```bash
-git clone <repository URL> recheck && cd recheck
+git clone https://github.com/vbhure/recheck.git recheck && cd recheck
 python -m venv .venv
 # Windows cmd/PowerShell: .venv\Scripts\activate    Git Bash: source .venv/Scripts/activate    macOS/Linux: source .venv/bin/activate
 # (PowerShell refusing to run the script: Set-ExecutionPolicy -Scope Process Bypass, then activate)
@@ -206,6 +206,16 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 
 The zero-model path is first-class; a provider is an adapter. `recheck preflight --model bedrock|anthropic|ollama` checks configuration **without an inference call**, in this order: provider known; model id set; the endpoint (Anthropic: an `ANTHROPIC_BASE_URL` override must be https or loopback; Bedrock: an override and the endpoint botocore resolves must both be the regional https AWS endpoint); provider SDK importable, and if it is not, nothing after it is checked; then for Bedrock a region and a resolvable AWS credential, for Anthropic `ANTHROPIC_API_KEY`, for Ollama `RECHECK_OLLAMA_HOST` parsing as scheme://host:port. The Ollama host is shown with any password masked, but it is not required to be https or local, so condition names sent to a remote http host travel unencrypted. Preflight reports how a credential resolves, never a credential value. `audit` and `sweep` call a provider only when run with `--model`. Only condition names, as the parser read them, are sent to a model: never a percentage, the stated rating, a date or a long number. Other text written inside a table row's name is sent with it. Every provider gets the time budget and the output cap (4,096 tokens by default; Ollama as `num_predict`), and the Strands Agent does not retry; the Bedrock and Anthropic clients also make a single attempt. Configuration is by environment variable; see [`.env.example`](.env.example).
 
+### Running it on AWS: Bedrock and AgentCore Runtime
+
+[`deploy/agentcore/`](deploy/agentcore/) packages the same pipeline for **Amazon Bedrock AgentCore Runtime**. `app.py` is a `BedrockAgentCoreApp` entrypoint that calls Recheck's own audit and resume code with the Bedrock provider (default model `us.amazon.nova-lite-v1:0`, overridable) and returns the verdict, the possible ratings, any question and who decided each fact, as JSON. A follow-up invocation with the same runtime session id answers the question while that session is alive. `cloudshell.sh` runs from AWS CloudShell: `preflight`, one live Bedrock audit of a synthetic letter, then `agentcore configure` / `deploy` (container built in CodeBuild, auto-created role) and one `agentcore invoke`, with the cleanup commands.
+
+**Status, stated plainly:** the entrypoint is tested locally through the zero-model path (`tests/test_agentcore_app.py`, and HTTP calls against the local `/invocations` server). It was **not deployed, and no Bedrock call was made, during the hackathon**: no AWS credentials were available on the build machine. Deploying sends the letter text to the runtime in your own AWS account; only condition names outside the lexicon go to the model. Details, costs and limits: [deploy/agentcore/README.md](deploy/agentcore/README.md).
+
+## How this was built
+
+Written during the hackathon's submission period, with Claude Code used as an AI coding assistant for implementation, testing and review. Every letter, fixture and test in the repository was created for this project.
+
 ## Repository layout
 
 ```text
@@ -224,6 +234,7 @@ src/recheck/
   cli.py                    sweep / audit / resume / show / preflight
   models/scripted.py        zero-model Strands Model
   models/factory.py         provider adapters and preflight
+deploy/agentcore/  AgentCore Runtime entrypoint, CloudShell deploy script, runtime requirements
 tools/     demo.py, gate_report.py, fetch_cfr.py, make_letters.py, make_caseload.py
 fixtures/  letters, caseload (+ EXPECTED.md), classification fixtures, Table I cells, name sets
 docs/      architecture.svg, ENGINEERING.md
