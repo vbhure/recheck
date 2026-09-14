@@ -177,6 +177,20 @@ Nine areas of the release candidate 12705f8 were reviewed at once: the rating en
 
 **Found and not fixed:** EXTRACT-9, STATE-6, SEC-5, CLI-6 and CLI-7, listed under Known residuals.
 
+### Final verification
+
+The merged release candidate was then checked from fresh clones on Python 3.12 and 3.10 with a network blocker, red-teamed across the merged areas, and audited claim by claim against the README and the demo. Code and test findings, each with a test that fails before its change (XC-1's, which changes no code, fails with its mutation applied):
+
+| Finding | Sev. | Defect | Test |
+|---|---|---|---|
+| RC-01 | P2 | The suite was not network-free: the Bedrock client test resolved this machine's AWS credential chain and looked up the instance-metadata address 169.254.169.254 twice. It now runs with no AWS configuration and asserts no lookup or connection | `test_review_regressions.py` |
+| XC-1 | P3 | After the merge, the load check on a decision's percent was shadowed by the facts-against-trace check; with it removed the suite passed, and a consistently edited "ten" made `show` raise TypeError | `test_deep_tests.py` |
+| XC-2 | P3 | An answer added on file for a condition whose facts all came from the letter passed every load check, and the verdict cited "the facts you supplied" (also on 12705f8). Such an answer is now refused as corrupt | `test_deep_state.py` |
+| CL-03 | P3 | The `--scripted` Agent kept Strands' default retry strategy (6 attempts); only the `--model` Agent passed `retry_strategy=None` | `test_rc2_fixes.py` |
+| CL-11 | P3 | `--scripted` with no `--classifications` said classifications were "replayed from a committed fixture", and the usage lines offered `--scripted` without one | `test_deep_model.py` |
+
+The claims audit's wording findings were fixed in the README, the architecture diagram and the demo narration. **Not fixed:** XC-3 (listed under Known residuals), and the README's demo-video link and repository URL, which are filled in at submission.
+
 ### Measurements behind the claims
 
 Taken by the reviewers on 12705f8 and on their branches, often on a machine under concurrent load. On the merged code, the generator, the SEC-1 timings, the full suite, the demo and the caseload sweep were run again.
@@ -204,5 +218,6 @@ Taken by the reviewers on 12705f8 and on their branches, often on a machine unde
 - **Provider SDK logs.** Under `--debug`, Recheck masks credential-shaped text it can see, but not everything the provider SDKs log, so treat a `--debug` log as sensitive. Preflight refuses a Bedrock VPC endpoint or gateway.
 - **Not exercised on POSIX.** The lock's delete-before-release order was worked out on paper and tested with a monkeypatch on Windows, not on a POSIX machine. SEC-4's discard of a linked case directory was tested with a Windows junction; its symlink branch has not been run. The letter's path is stored as given, so a resume from another working directory cannot check the letter's digest and goes ahead anyway.
 - **The parser refuses some ordinary wording.** Hard-wrapped all-caps prose, a year inside a condition name, or a percentage in an unrelated paragraph refuses the whole letter. So do spaced dot leaders in a table (". . . .", EXTRACT-9) and a CAPS "COMBINED EVALUATION FOR COMPENSATION:" wrapped before its percentage inside a prose letter; on one generator seed, on the extraction branch, these were about 200 and 64 of 2,500 random letters. That fails closed, but it is a letter a reviewer checks by hand.
+- **A case directory that is a link to a deleted directory cannot be re-audited** (XC-3). `audit` and `sweep`, even with `--fresh`, exit 3 with FileExistsError, because they discard only a case whose case.json exists. Nothing outside the store is touched; the link has to be removed by hand, and planting it needs write access to the store.
 - **An interrupted save leaves files behind** (STATE-6). A process killed while saving leaves a `.case.*.tmp` file in the case directory and a `<case>.lock` file in the store.
 - **Minor.** A custom Model's exception class name can appear in the note. The provider line (`describe()`) prints `RECHECK_OLLAMA_HOST`, password masked, for Bedrock and Anthropic too, which never use it (SEC-5). A run stopped part-way by Ctrl+C gets a triage row with no command to continue it, and its report's provenance can mislead (CLI-6). A directory passed as a letter, preflight failures printed to stdout and pypdf warnings on stderr have unclear messages (CLI-7). An interrupt response for another case re-asks the question and adds a second question entry to the trace; no genuine flow sends one.
