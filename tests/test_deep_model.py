@@ -89,6 +89,44 @@ def test_a_throttled_provider_is_called_once_per_letter_not_retried_by_the_agent
 
 
 # --------------------------------------------------------------------------
+# MODEL-2: non-finite or truncating numbers from the environment
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", ["RECHECK_TIMEOUT_S", "RECHECK_MAX_TOKENS"])
+@pytest.mark.parametrize("bad", ["inf", "Infinity", "nan", "-nan", "1e400"])
+def test_a_non_finite_number_is_refused(key, bad):
+    with pytest.raises(ProviderNotConfigured):
+        load_config("bedrock", env={key: bad})
+
+
+def test_a_max_tokens_that_truncates_to_zero_is_refused():
+    with pytest.raises(ProviderNotConfigured):
+        load_config("bedrock", env={"RECHECK_MAX_TOKENS": "0.5"})
+
+
+def test_ordinary_numbers_are_still_accepted():
+    config = load_config("bedrock", env={"RECHECK_TIMEOUT_S": "12.5", "RECHECK_MAX_TOKENS": "2048"})
+    assert (config.timeout_s, config.max_tokens) == (12.5, 2048)
+
+
+def test_an_infinite_output_cap_is_a_refusal_not_a_traceback(monkeypatch, tmp_path):
+    """RECHECK_MAX_TOKENS=inf raised OverflowError out of load_config: a traceback, exit 1."""
+    monkeypatch.setenv("RECHECK_MAX_TOKENS", "inf")
+    code, out, err = main("preflight", "--model", "ollama", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED
+    assert "RECHECK_MAX_TOKENS" in err
+
+
+def test_a_nan_budget_never_reaches_the_classifier(monkeypatch):
+    """With RECHECK_TIMEOUT_S=nan every call was abandoned the moment it was
+    made - after the request was already sent - and reported as "did not
+    answer within nans"."""
+    monkeypatch.setattr(factory_module, "preflight", lambda config: [Check("stub", True, "")])
+    with pytest.raises(ProviderNotConfigured):
+        build_agent_factory("bedrock", env={"RECHECK_REGION": "us-west-2", "RECHECK_TIMEOUT_S": "nan"})
+
+
+# --------------------------------------------------------------------------
 # MODEL-4: audit --fresh discarded the case before the classifier was resolved
 # --------------------------------------------------------------------------
 

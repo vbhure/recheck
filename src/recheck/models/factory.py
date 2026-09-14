@@ -41,6 +41,7 @@ Design constraints, all of them load-bearing:
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -332,13 +333,17 @@ def load_config(
             endpoint, endpoint_variable = value, variable
             break
 
+    max_tokens = int(_positive_float(env, "RECHECK_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+    if max_tokens < 1:  # "0.5" is greater than zero, and became a cap of 0
+        raise ProviderNotConfigured(f"RECHECK_MAX_TOKENS must be at least 1, got {env.get('RECHECK_MAX_TOKENS')!r}")
+
     return ProviderConfig(
         provider=name,
         model_id=model_id,
         region=region,
         host=host,
         timeout_s=_positive_float(env, "RECHECK_TIMEOUT_S", DEFAULT_TIMEOUT_S),
-        max_tokens=int(_positive_float(env, "RECHECK_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
+        max_tokens=max_tokens,
         temperature=DEFAULT_TEMPERATURE,
         endpoint=endpoint,
         endpoint_variable=endpoint_variable,
@@ -353,6 +358,12 @@ def _positive_float(env: Mapping[str, str], key: str, default: float) -> float:
         value = float(raw)
     except ValueError as exc:
         raise ProviderNotConfigured(f"{key}={raw!r} is not a number") from exc
+    # float() also reads "inf", "nan" and "1e400". An infinite
+    # RECHECK_TIMEOUT_S removed the wall-clock budget, a NaN one abandoned
+    # every call as it was made (and after it was sent), and
+    # RECHECK_MAX_TOKENS=inf raised OverflowError with a traceback.
+    if not math.isfinite(value):
+        raise ProviderNotConfigured(f"{key}={raw!r} is not a finite number")
     if value <= 0:
         raise ProviderNotConfigured(f"{key} must be greater than zero, got {value}")
     return value
