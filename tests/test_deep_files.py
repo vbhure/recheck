@@ -227,3 +227,26 @@ def test_a_question_naming_a_condition_with_a_lone_surrogate_can_be_answered(tmp
     assert case_json(store, "q")["status"] == "complete"
     code, out, err = main("show", "--case", "q", "--brief", store=store)
     assert code == EXIT_OK and "�" in out
+
+
+# --------------------------------------------------------------------------
+# FILES-4: a UTF-16 transcript with a byte-order mark
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_a_utf16_transcript_with_a_byte_order_mark_is_read(tmp_path, codec):
+    """Before: exit 3, "could not be read (UnicodeDecodeError: 'utf-8' codec
+    can't decode byte 0xff in position 0)"."""
+    path = tmp_path / "letter.txt"
+    path.write_bytes("﻿".encode(codec) + TABULAR.replace("\n", "\r\n").encode(codec))
+    assert read_document(path) == TABULAR
+    code, out, err = main("audit", path, "--case", "u16", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_OK and "POTENTIAL DISCREPANCY" in out, out + err
+
+
+def test_control_utf16_without_a_byte_order_mark_is_still_refused(tmp_path):
+    """Control (passes before and after): no guessing without the mark."""
+    path = tmp_path / "letter.txt"
+    path.write_bytes(TABULAR.encode("utf-16-le"))
+    code, out, err = main("audit", path, "--case", "u16", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED and "DISCREPANCY" not in out and "recomputed" not in out

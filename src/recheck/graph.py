@@ -41,6 +41,7 @@ holds the domain facts. There is no second hand-written copy of graph state.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import pathlib
@@ -180,8 +181,13 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
                 f"or a .txt transcript."
             )
         return text
+    # UTF-8, or UTF-16 when the file says so with a byte-order mark: Windows
+    # PowerShell 5.1's `Get-Content letter > letter.txt` writes UTF-16 LE, and
+    # such a transcript was refused as a UnicodeDecodeError. Nothing is guessed
+    # without the mark.
+    utf16 = data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
     # Universal newlines, as Path.read_text gives: a bare CR is a line break.
-    text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    text = data.decode("utf-16" if utf16 else "utf-8").replace("\r\n", "\n").replace("\r", "\n")
     if len(text) > MAX_DOCUMENT_CHARS:
         raise DocumentTooLarge(too_long)
     return text
