@@ -275,3 +275,19 @@ def test_a_finished_report_prints_through_an_encoding_that_lacks_a_character_in_
         assert code == EXIT_OK, err.getvalue()
         assert "POTENTIAL DISCREPANCY" in out and "knee\\u2010joint" in out
     assert case_json(store, "hy")["status"] == "complete"
+
+
+# --------------------------------------------------------------------------
+# FILES-6: control characters in a condition name
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("control", ["\x1b[8m", "\x1b[1A\x1b[2K", "\x9b2K", "\x07", "\x00"])
+def test_a_control_character_in_a_condition_name_is_refused(tmp_path, control):
+    """Before: exit 0 with "Tinnitus<ESC>[8m (DC 6260)" printed raw, which
+    hides everything after it on a terminal, the verdict included."""
+    path = tmp_path / "letter.txt"
+    path.write_text(TABULAR.replace("Tinnitus", "Tinnitus" + control), encoding="utf-8")
+    code, out, err = main("audit", path, "--case", "ctl", "--brief", store=tmp_path / "runs")
+    assert code == EXIT_CANNOT_PROCEED and "control character" in out + err
+    assert control not in out + err
+    assert case_json(tmp_path / "runs", "ctl")["status"] == "unparsed"

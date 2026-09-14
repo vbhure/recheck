@@ -420,6 +420,12 @@ def _name_problem(condition: str) -> str | None:
     """Why a captured condition name cannot be what the letter rates, if it cannot."""
     if not condition or not re.search(r"[^\W\d_]{2,}", _CODE_REFERENCE.sub(" ", condition)):
         return "a rating statement names no condition"
+    if any(unicodedata.category(ch) == "Cc" for ch in condition):
+        # ESC and the C1 CSI reach the terminal with the report: "ESC[8m"
+        # concealed every line after the name, verdict included, and cursor
+        # controls can overwrite a printed figure. A letter has no use for them.
+        return ("a condition name contains a control character (a terminal escape or other non-printing code), "
+                "so what Recheck prints may not be what the letter shows")
     if _NOT_A_NAME_START.match(condition):
         # "is granted", "and instability": the statement was split from the
         # line that holds its condition, and what is left has no anatomy.
