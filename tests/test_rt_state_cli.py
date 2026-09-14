@@ -84,13 +84,16 @@ def _edit(store_root: pathlib.Path, case_id: str, change) -> None:
 
 
 def _fingerprint(store_root: pathlib.Path, case_id: str) -> None:
-    """Record the letter's SHA-256 as the extract node does once agent X's change
-    is merged; until then the audit leaves it unset and the test supplies it."""
-    store = CaseStore(store_root)
-    case = store.load(case_id)
-    if getattr(case, "document_sha256", None) is None:
-        case.document_sha256 = hashlib.sha256(pathlib.Path(case.source_path).read_bytes()).hexdigest()
-        store.save(case)
+    """The audit recorded the letter's SHA-256, as the extract node does.
+
+    This helper used to supply the digest itself when the audit had left it
+    unset (written before the extract node recorded one). It then hid the
+    loss of that recording: with the extract node storing no digest, every
+    letter-changed test here still passed on the digest the helper wrote.
+    """
+    case = CaseStore(store_root).load(case_id)
+    assert case.document_sha256 == hashlib.sha256(pathlib.Path(case.source_path).read_bytes()).hexdigest(), \
+        "the audit must record the letter's fingerprint"
     assert case_json(store_root, case_id).get("document_sha256"), "the fingerprint must persist in case.json"
 
 
