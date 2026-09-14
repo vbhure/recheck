@@ -42,8 +42,9 @@ UNKNOWN.
 
 Anything that fails leaves the extremity group UNKNOWN. The reason recorded
 for a failure is Recheck's own wording: text from a provider, an endpoint or
-the model (an exception message, a stop reason) never reaches the trace, the
-case file or the reviewer's question.
+the model (an exception message, a stop reason Recheck does not recognise)
+never reaches the trace, the case file or the reviewer's question. Only an
+exception's class name and a stop reason from a known list are recorded.
 """
 
 from __future__ import annotations
@@ -179,7 +180,7 @@ def derive_laterality(condition: str) -> str:
     """Which side a condition is on, read from its name as the letter wrote it.
 
     Laterality is a CLOSED lexical set - left, right, both - so it is
-    deterministic code's job. Three rules keep it honest:
+    deterministic code's job. Five rules keep it honest:
 
       - only the condition text is read, never the surrounding line, so a
         side mentioned in an adjacent sentence cannot leak in;
@@ -187,7 +188,13 @@ def derive_laterality(condition: str) -> str:
       - a side inside a linked clause belongs to the OTHER condition: in
         "Left knee strain, secondary to right knee strain" the rated knee is
         the left one, and "knee strain secondary to right ankle injury" has
-        no stated side at all.
+        no stated side at all;
+      - both sides need wording that names both (bilateral, both knees, left
+        and right); two side words otherwise, or a side word beside the other
+        side's abbreviation, leave the side unknown;
+      - a side that only the text after an opening word (by, after, since,
+        subsequent to, from, during, while) supplies is not taken (see
+        before_open_link).
     """
     primary = primary_clause(condition)
     side = _sides_in(primary)

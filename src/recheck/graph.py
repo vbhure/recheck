@@ -246,7 +246,9 @@ class ExtractNode(MultiAgentBase):
         # and one that reads like a crash.
         # Only READING the document is a refusal. A defect in parse() is a
         # defect in Recheck and must not be reported as "could not read the
-        # letter", so it is left to surface.
+        # letter", so it is left to surface. An exception from the PDF child is
+        # a reading failure whatever its type: a pypdf error or OSError arrives
+        # as itself, anything else as a PdfReadError naming it.
         from pypdf.errors import PyPdfError
 
         path = pathlib.Path(self.source)

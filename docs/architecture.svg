@@ -120,7 +120,7 @@
   <rect x="28" y="532" width="324" height="88" rx="8" fill="#ffffff" stroke="#5b6472" stroke-width="1.6"/>
   <text x="42" y="554" font-size="14" font-weight="700" fill="#1a1f27">UNDETERMINED</text>
   <text x="42" y="574" font-size="13" fill="#2b3340">not computed and never guessed</text>
-  <text x="42" y="591" font-size="13" font-style="italic" fill="#4a5260">when facts that change the result<tspan x="42" dy="17">stay unknown, or are too many to try</tspan></text>
+  <text x="42" y="591" font-size="13" font-style="italic" fill="#4a5260">when an unknown fact or an open M21-1 reading<tspan x="42" dy="17">changes the result, or the case is too large</tspan></text>
 
   <!-- ===== NodeTimeline hook ===== -->
   <rect x="856" y="138" width="316" height="69" rx="8" fill="#ffffff" stroke="#8a929e" stroke-width="1.4" stroke-dasharray="4 3"/>

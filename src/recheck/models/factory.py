@@ -7,7 +7,9 @@ verification route.
 
 Design constraints, all of them load-bearing:
 
-  SECRETS ARE NOT OURS. Recheck never stores, logs or prints a credential.
+  SECRETS ARE NOT OURS. Recheck never stores or prints a credential, and
+  masks credential-shaped text in log records; under --debug the provider
+  SDKs may log more than that mask can see, so a --debug log is sensitive.
   Each provider resolves its own via its own standard mechanism (the AWS
   credential chain, ANTHROPIC_API_KEY). Preflight checks only whether a
   credential is set or could be RESOLVED - never a value, never a prefix.

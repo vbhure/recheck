@@ -681,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--store", default=DEFAULT_STORE, help="case store directory (default: runs)")
     parser.add_argument("--debug", action="store_true",
                         help="show framework logging (Strands node/graph internals), normally suppressed; "
-                             "known HTTP and signing loggers stay quiet and credential-shaped text is masked, "
+                             "known HTTP and signing loggers are held at INFO and credential-shaped text is masked, "
                              "but treat a --debug log as sensitive")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -691,7 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--classifications", default=None, help="JSON fixture for --scripted")
         p.add_argument("--model", default=None,
                        help="live provider id (bedrock, anthropic, ollama); ignored with --scripted")
-        p.add_argument("--fresh", action="store_true", help="discard any existing case and audit again")
+        p.add_argument("--fresh", action="store_true", help="discard any existing case, reviewer answers included, and audit again")
 
     audit = sub.add_parser("audit", help="audit one decision letter")
     audit.add_argument("letter")

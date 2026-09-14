@@ -35,7 +35,11 @@ CFR engine; a type-confused field crashed the whole sweep; a forged case_id
 redirected writes into a different case and destroyed its result. So
 CaseStore.load checks every field's type and value, checks that the file
 names the case it was read for, and re-derives a completed result from the
-stored facts before anything can report it.
+stored facts before anything can report it. It also ties the facts to the
+letter's values recorded in the trace and to the owner recorded for each fact,
+and the possible degrees to the facts (_check_as_read, _check_provenance,
+_check_possibilities). A file edited consistently in every place still gives
+a consistent report of false values; only re-reading the letter catches that.
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ For each letter, unattended:
 5. **Asks a person only when an answer would change the rating** — a side or an extremity group, never a number — and shows the ratings the answers lead to. The question is persisted and the process exits; the representative answers later, from any process. *(human)*
 6. **Applies 4.26 and 4.25** and compares with the letter. *(deterministic)*
 
-Real output, from the committed synthetic caseload:
+Real output, from the committed synthetic caseload (progress and rule lines not shown; `...` marks rows left out):
 
 ```text
 CASELOAD TRIAGE  -  24 document(s)
@@ -93,10 +93,10 @@ Rating calculators exist. What a representative lacks is something that works th
 
 | Fact or step | Decided by | Guard |
 |---|---|---|
-| Percentages, stated combined rating, evidence lines | deterministic parser | refuses rather than reading part of a letter: a percentage in the decision section it cannot tie to a rating or the combined statement, a numbered list with a gap or a wrapped row, a condition rated twice, two different current combined figures, a rating after a mid-list heading, a value over 100%, a condition name carrying letterhead or salutation text |
+| Percentages, stated combined rating, evidence lines | deterministic parser | refuses rather than reading part of a letter: a percentage in the decision section it cannot tie to a rating or the combined statement, a numbered list with a gap or a wrapped row, a condition rated twice in prose sentences (repeated numbered table rows are kept as separate ratings), two different current combined figures, a rating after a mid-list heading, a value over 100%, a condition name carrying letterhead or salutation text |
 | Extremity group, rating-schedule vocabulary | deterministic lexicon | abstains rather than guessing; 0 wrong assertions on both measured name sets |
-| Extremity group, other names | **AI** — one Strands Agent structured-output call per letter | strict schema: the name echoed back, a group and a confidence only (no side, number or free text). Extra fields, wrong types, a second answer or a repeated key discard the output. Confidence floor 0.75. "none" vetoed for limb or nerve vocabulary and for letters outside Latin-1. `turns=1`. Wall-clock timeout, with the call on its own thread. At most 40 names per call; a name carrying a percentage, label, date or long number is not sent. Any failure leaves the group **unknown** |
-| Side (left / right / both) | deterministic, from the letter's words | handedness and linked conditions ("secondary to right knee") are not the rated side |
+| Extremity group, other names | **AI** — one Strands Agent structured-output call per letter | strict schema: the name echoed back, a group and a confidence only (no side, number or free text). Extra fields, wrong types, a second answer or a repeated key discard the output. Confidence floor 0.75. "none" vetoed for limb or nerve vocabulary and for letters outside Latin-1. `turns=1`, and the Strands Agent's own retry is off. Wall-clock timeout, with the call on its own thread. At most 40 names per call; a name carrying a percentage, label, date or long number is not sent. Any failure leaves the group **unknown** |
+| Side (left / right / both) | deterministic, from the letter's words | handedness and linked conditions ("secondary to right knee") are not the rated side; "both" only from wording that names both sides, and two conflicting side words leave the side unknown |
 | Whether a person is needed | deterministic materiality check | every possible answer run through the engine, up to 4,096 combinations within a fixed work budget; beyond that the result is UNDETERMINED, never sampled |
 | A missing side or group | **human** reviewer | asked only when it changes the rating (never about a 0% evaluation, which 4.26(c) keeps out of the factor); facts only; a stated fact cannot be overridden; a rejected answer re-opens the question; a partial answer ("lower") brings a follow-up for what is still missing |
 | 4.26 bilateral factor, 4.25 Table I, final degree | deterministic engine | 684/684 published Table I cells; the regulations' worked examples; published Board and Federal Register calculations; an independent reading of 4.26 |
@@ -112,7 +112,7 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
 
-python tools/demo.py          # the whole story in about 20 seconds, zero cost
+python tools/demo.py          # the whole story, zero cost (about 17 s here; longer on a busy machine)
 ```
 
 Or drive it yourself:
@@ -133,7 +133,7 @@ recheck audit fixtures/letters/07_clinical_terms.txt --case b
 recheck show --case a --brief
 ```
 
-Exit codes: `0` finished · `2` waiting on an answer (including a follow-up after a partial answer) · `3` no result (unreadable, undetermined, rejected answer, a case that cannot be trusted or whose letter has changed, a case busy in another process, a malformed command). `show` exits `0` whenever it prints a case as it stands, whatever its status, and `3` when the case cannot be used as shown (corrupt, its letter changed, or its question lost). `--fresh` re-audits an existing case.
+Exit codes: `0` finished · `2` waiting on an answer (including a follow-up after a partial answer) · `3` no result (unreadable, undetermined, rejected answer, a case that cannot be trusted or whose letter has changed, a case busy in another process, a malformed command). `show` exits `0` whenever it prints a case as it stands, whatever its status, and `3` when the case cannot be used as shown (corrupt, its letter changed, or its question lost). `--fresh` re-audits an existing case and discards its reviewer answers; a sweep says for how many cases `--fresh` would discard answers, and afterwards names them.
 
 A resume that fails part-way (a file another program holds, Ctrl+C) puts the case and its question back as they were. A case whose answers were accepted before its arithmetic ran is finished with `recheck resume --case ID` and no `--answer`. A sweep never deletes a case it cannot load unless you pass `--fresh`, and two letters whose file names differ only in letter case are refused rather than sharing one case.
 
@@ -160,7 +160,7 @@ extract --(gate: extraction succeeded)--> classify --> assess --(gate: ready)-->
 | `GraphBuilder`, custom `MultiAgentBase` nodes | `graph.py` | a per-letter state machine that can stop at `assess` and continue elsewhere |
 | Conditional edges | `graph.py` | returning `FAILED` does not stop downstream nodes in this SDK version, so the gates are topology. They must also be *stable*: Strands re-evaluates them when it persists the session, and a condition that flips after its node runs empties the resume point |
 | `Interrupt` raised from a node | `graph.py: AssessNode` | the reviewer's question, with its possible outcomes in the interrupt reason |
-| `FileSessionManager` | `graph.py: build_graph` | the only store of graph state, restored as the graph is built. Resume refuses when the session holds no open question, and puts the session and case file back if the resumed run fails |
+| `FileSessionManager` | `graph.py: build_graph` | the only store of graph state, restored as the graph is built. Resume, show and sweep accept a session only in the shape `assess` leaves it (one interrupt, raised by `assess` for this case, nothing else to re-run); resume puts the session and case file back if the resumed run fails |
 | `HookProvider` on `BeforeNodeCallEvent` | `graph.py: NodeTimeline` | records which process ran each node, printed in every report |
 | `Agent.stream_async(structured_output_model=…, limits={"turns": 1}, cancel_signal=…)`, on its own thread and event loop | `classify.py` | one bounded, validated classification call. The raw tool-use JSON is re-read, so a second answer or a repeated key discards the output, and an answer that arrives after the wall-clock budget is never used |
 | Custom `Model` | `models/scripted.py` | the zero-cost path through the real structured-output machinery |
@@ -182,16 +182,16 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 
 ## Verification
 
-- **1,522 tests**: 686 of them the Table I file (every published cell), 836 behavioural, of which 391 are the red team's regression tests (`tests/test_rt_*.py`). `pytest` runs them in about two minutes.
-- **Regression tests for every defect fixed**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), and an adversarial red team (53 findings, two rounds of fixes, then a final regression pass over where the fixes met). The defects, fixes and known residuals are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
+- **1,800 tests**: 686 of them the Table I file (every published cell), 1,114 behavioural. Of those, 421 are the red team's regression tests (`tests/test_rt_*.py`) and 248 the deep review's (`tests/test_deep_*.py` and `tests/test_rc2_fixes.py`). `pytest` runs them in a few minutes.
+- **Regression tests for every code defect fixed**, including those from an 8-lens hostile review, a test-suite review that mutation-tested the code (34 of 35 reintroduced defects caught; the survivor now has a test), an adversarial red team (53 findings, two rounds of fixes, then a final regression pass over where the fixes met), and a deep review of the release candidate in nine areas, with an independent verifier re-attacking the fixes in seven of them. Its mutation run broke safety checks 106 ways; the suite caught 97 of the 105 that change behaviour, and the 8 survivors now have tests. The defects, fixes, measurements and known residuals are written up in [docs/ENGINEERING.md](docs/ENGINEERING.md).
 - **Hand-derived expectations** for eight caseload letters that each pin one behaviour (three leg disabilities, four extremities, a linked clause, an immaterial unknown, a material question, an unlisted term, a lower recomputation, clinical names with no side) — [fixtures/caseload/EXPECTED.md](fixtures/caseload/EXPECTED.md).
-- **Clean clone:** install, the full suite, the demo and every command in this README run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. A few tests skip themselves: two Anthropic-adapter tests without the optional `anthropic` extra, and three that need Windows paths or a case-insensitive filesystem.
+- **Clean clone:** before the deep review, install, the full suite, the demo and every command in this README were run from a fresh clone with an empty home directory and no credentials, on Python 3.12 and 3.10. On the final code, the full suite (1,798 passed, 2 skipped) and the demo were run again on Windows with Python 3.12 and 3.10, in installed environments. A few tests skip themselves: two Anthropic-adapter tests without the optional `anthropic` extra, three that need Windows, and two that need a case-insensitive filesystem.
 
 ## Limitations
 
 - **Synthetic letters only.** Every letter in `fixtures/` was written for this project. No real veteran data is in the repository, and the parser has not met real VA correspondence.
-- **Narrative letters, not the code sheet,** and no OCR: an image-only PDF is refused, and so is a scan whose OCR text is laid invisibly over the image (a "searchable" scan).
-- **The parser fails closed, sometimes on ordinary wording.** Hard-wrapped all-caps prose, a year inside a condition name ("status post 2019 arthroscopy") or a percentage in an unrelated paragraph of the decision section make it refuse the letter rather than read it. A staged rating written under two different condition names reads as two ratings.
+- **Narrative letters, not the code sheet,** and no OCR: an image-only PDF is refused, and so is a scan whose OCR text is drawn in an invisible text mode over the image (a "searchable" scan). Text hidden other ways, such as under a full-page image, is not detected. A `.txt` letter must be UTF-8, or UTF-16 with a byte-order mark.
+- **The parser fails closed, sometimes on ordinary wording.** Hard-wrapped all-caps prose, spaced dot leaders in a table (". . . ."), a year inside a condition name ("status post 2019 arthroscopy") or a percentage in an unrelated paragraph of the decision section make it refuse the letter rather than read it. A staged rating written under two different condition names, or as two numbered table rows (even with the same name and code), reads as two ratings. A linked condition in wording the parser does not list ("Hypertension, with right knee injury") can still give a name that limb and side.
 - **No live model has been run.** The model boundary is exercised through the real Strands structured-output path with scripted payloads, including malformed and adversarial ones. No accuracy claim is made for any provider.
 - **4.26 as currently in force.** Where 4.26(d) decides a result, the report says the exception took effect April 16, 2023; for a period before that date the prior rule applied the factor without exception. Recheck does not read the decision date.
 - **Paired skeletal muscles** (4.26's third category) are not modelled.
@@ -199,7 +199,7 @@ Honestly: not proven. The rating schedule's vocabulary is finite, so the lexicon
 
 ## Model providers
 
-The zero-model path is first-class; a provider is an adapter. `recheck preflight --model bedrock|anthropic|ollama` checks configuration **without an inference call**: provider known, model id set, endpoint safe (an override, or for Bedrock the endpoint botocore resolves), SDK importable, region set, credential resolvable — reporting only whether and how, never a value. `audit` and `sweep` call a provider only when run with `--model`. Only condition names, as the parser read them, are sent to a model: never a percentage, the stated rating, a date or a long number. Other text written inside a table row's name is sent with it. The Bedrock and Anthropic clients get the time budget and a single attempt; the Ollama client gets the time budget. Configuration is by environment variable; see [`.env.example`](.env.example).
+The zero-model path is first-class; a provider is an adapter. `recheck preflight --model bedrock|anthropic|ollama` checks configuration **without an inference call**, in this order: provider known; model id set; the endpoint (Anthropic: an `ANTHROPIC_BASE_URL` override must be https or loopback; Bedrock: an override and the endpoint botocore resolves must both be the regional https AWS endpoint); provider SDK importable, and if it is not, nothing after it is checked; then for Bedrock a region and a resolvable AWS credential, for Anthropic `ANTHROPIC_API_KEY`, for Ollama `RECHECK_OLLAMA_HOST` parsing as scheme://host:port. The Ollama host is shown with any password masked, but it is not required to be https or local, so condition names sent to a remote http host travel unencrypted. Preflight reports how a credential resolves, never a credential value. `audit` and `sweep` call a provider only when run with `--model`. Only condition names, as the parser read them, are sent to a model: never a percentage, the stated rating, a date or a long number. Other text written inside a table row's name is sent with it. Every provider gets the time budget and the output cap (4,096 tokens by default; Ollama as `num_predict`), and the Strands Agent does not retry; the Bedrock and Anthropic clients also make a single attempt. Configuration is by environment variable; see [`.env.example`](.env.example).
 
 ## Repository layout
 

@@ -14,8 +14,9 @@ controls, which say so.
          unknown - read "too many facts are unknown".
   RG-05  A complete case whose single both-sides evaluation leaves M21-1's
          reading open loaded and printed a result.
-  RG-06  A forged trace entry under any action name but the three result
-         names ("Final degree: 90%") printed at exit 0.
+  RG-06  A forged trace entry under an action name no node writes
+         ("Final degree: 90%") printed at exit 0. The action must now be one
+         a node writes; free text under an allowed action is not checked.
   RG-09  A triage row cut the UNDETERMINED reason mid-word.
   RG-10  The PDF child: Ctrl+C was held for the whole budget.
   RG-11  A 0% condition with an unknown side - which 4.26(c) keeps out of
