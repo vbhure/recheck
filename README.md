@@ -167,7 +167,7 @@ extract --(gate: extraction succeeded)--> classify --> assess --(gate: ready)-->
 | Custom `Model` | `models/scripted.py` | the zero-cost path through the real structured-output machinery |
 | Bedrock, Anthropic and Ollama model adapters | `models/factory.py` | a provider is an adapter at the edge, not a dependency |
 
-Deliberately not used: tools, Swarm, A2A, multi-agent delegation, RAG, memory. The problem is one workflow per letter.
+Deliberately not used: agent tools (other than the structured-output tool Strands generates from the schema), Swarm, A2A, multi-agent delegation, RAG, long-term memory (the only persisted state is each letter's case file and graph session). The problem is one workflow per letter.
 
 ### Is the AI necessary?
 
