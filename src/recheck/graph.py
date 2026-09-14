@@ -151,7 +151,17 @@ def _document_text(p: pathlib.Path, data: bytes) -> str:
             # An OSError, so the extract node records "could not be read".
             raise ChildProcessError(f"the PDF reader stopped without a result ({outcome.value})")
         if outcome.kind == "error":
-            raise outcome.value  # type: ignore[misc] - what pypdf raised, as in-process
+            from pypdf.errors import PdfReadError, PyPdfError
+
+            if isinstance(outcome.value, (PyPdfError, OSError)):
+                raise outcome.value  # what pypdf raised, as in-process
+            # pypdf also fails on a malformed file with KeyError (a Type0 font
+            # without /DescendantFonts), NotImplementedError (an unknown
+            # filter), RecursionError (deeply nested arrays) and others. Raised
+            # as they were, they escaped the extract node: the case stayed
+            # 'open' with no reason and read as a stopped run. Reading the PDF
+            # failed; say so.
+            raise PdfReadError(f"{type(outcome.value).__name__}: {outcome.value}") from outcome.value  # type: ignore[misc]
         if outcome.kind == "too_large":
             raise DocumentTooLarge(str(outcome.value))
         text = str(outcome.value)
